@@ -9,7 +9,8 @@ interface PositionPanelProps {
   tradingMode: "FUTURES" | "SPOT";
 }
 
-function fmt(n: number) {
+function fmt(n: number | null | undefined) {
+  if (n == null || Number.isNaN(n)) return "—";
   return n.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 

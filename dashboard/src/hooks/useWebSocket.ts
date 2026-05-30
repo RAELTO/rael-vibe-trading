@@ -81,15 +81,20 @@ export function useWebSocket() {
           next = { ...prev, last_decision: msg.data as AppState["last_decision"] }; break;
         case "order_placed": {
           const o = msg.data as AppState["open_positions"][number];
-          next = { ...prev, open_positions: [...prev.open_positions, o] }; break;
+          // Deduplicar por símbolo (coincide con el backend: 1 entrada por símbolo)
+          next = { ...prev, open_positions: [...prev.open_positions.filter(p => p.symbol !== o.symbol), o] };
+          break;
         }
         case "portfolio_update":
           next = { ...prev, portfolio: msg.data as AppState["portfolio"] }; break;
         case "news_update":
           next = { ...prev, last_news: msg.data as AppState["last_news"] }; break;
         case "position_update": {
-          const pos = msg.data as AppState["active_position"];
-          next = { ...prev, active_position: pos }; break;
+          const raw = msg.data as AppState["active_position"] | Record<string, never> | null;
+          // Tratar null o {} como "sin posición" → limpiar también la lista de open_positions
+          const pos = raw && Object.keys(raw).length > 0 ? (raw as AppState["active_position"]) : null;
+          next = { ...prev, active_position: pos, open_positions: pos ? prev.open_positions : [] };
+          break;
         }
         case "mode_change": {
           const m = msg.data as { mode: "FUTURES" | "SPOT" };

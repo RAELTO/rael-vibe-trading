@@ -304,7 +304,8 @@ async def broadcast_position_update(position: dict | None):
     app_state["active_position"] = position
     if position is None:
         app_state["open_positions"] = []
-    await manager.broadcast("position_update", position or {})
+    # Enviar null (no {}) al cerrar: el frontend distingue "sin posición" de "posición con datos".
+    await manager.broadcast("position_update", position)
 
 
 async def broadcast_mode_change(mode: str):
