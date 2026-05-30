@@ -1,0 +1,9 @@
+[submodule "Kronos"]
+	path = Kronos
+	url = https://github.com/shiyu-coder/Kronos.git
+[submodule "mempalace"]
+	path = mempalace
+	url = https://github.com/milla-jovovich/mempalace.git
+[submodule "Vibe-Trading"]
+	path = Vibe-Trading
+	url = https://github.com/HKUDS/Vibe-Trading.git

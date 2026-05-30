@@ -1,0 +1,60 @@
+wing: vibe_trading
+rooms:
+- name: agents
+  description: Files from agents/
+  keywords:
+  - agents
+  - agents
+- name: backend
+  description: Files from api/
+  keywords:
+  - backend
+  - api
+- name: core
+  description: Files from core/
+  keywords:
+  - core
+  - core
+- name: dashboard
+  description: Files from dashboard/
+  keywords:
+  - dashboard
+  - dashboard
+- name: execution
+  description: Files from execution/
+  keywords:
+  - execution
+  - execution
+- name: memory
+  description: Files from memory/
+  keywords:
+  - memory
+  - memory
+- name: mempalace
+  description: Files from mempalace/
+  keywords:
+  - mempalace
+  - mempalace
+- name: skills
+  description: Files from skills/
+  keywords:
+  - skills
+  - skills
+- name: design
+  description: Files from assets/
+  keywords:
+  - design
+  - assets
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: testing
+  description: Files from tests/
+  keywords:
+  - testing
+  - tests
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

@@ -1,0 +1,38 @@
+# Secrets
+.env
+*.key
+*.pem
+
+# Local agent/tooling config
+.claude/
+.mcp.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Node
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.env
+
+# MemPalace local data (no commitear)
+.mempalace/
+
+# Logs y datos temporales
+logs/
+data/
+*.log
+*.db
+*.sqlite
+null
+
+# IDE
+.vscode/
+.idea/

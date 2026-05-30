@@ -1,0 +1,82 @@
+export type Decision = "BUY" | "SELL" | "HOLD";
+export type SystemStatus = "idle" | "running" | "stopped";
+export type RiskHealth = "HEALTHY" | "MODERATE" | "HIGH_RISK" | "CRITICAL";
+
+export interface AgentVote {
+  agent_id: string;
+  vote: Decision;
+  confidence: number;
+  reasoning: string;
+  ts: string;
+}
+
+export interface DecisionEntry {
+  symbol: string;
+  decision: Decision;
+  score: number;
+  reason: string;
+  ts: string;
+}
+
+export interface Portfolio {
+  balance: number;          // balance real Binance USDT
+  binance_balance: number;
+  trading_budget: number;   // límite operativo ($1,000)
+  pnl: number;              // PnL acumulado sobre el budget (trades cerrados)
+  pnl_pct: number;
+  budget_pnl: number;
+  budget_pnl_pct: number;
+}
+
+export interface OpenPosition {
+  symbol: string;
+  side: string;
+  qty: number;
+  price: number;
+  sl: number;
+  tp: number;
+  ts: string;
+}
+
+export interface ActivePosition {
+  symbol: string;
+  side: "LONG" | "SHORT";
+  quantity: number;
+  entry_price: number;
+  mark_price: number;
+  unrealized_pnl: number;
+  liquidation_price: number;
+  leverage: number;
+  sl_price: number | null;
+  tp_price: number | null;
+  open_time: string | null;
+}
+
+export interface NewsContext {
+  sentiment?: number;
+  impact?: string;
+  summary?: string;
+  assets?: Record<string, number>;
+  message?: string;
+}
+
+export interface AppState {
+  system_status: SystemStatus;
+  current_cycle: number;
+  last_decision: DecisionEntry | null;
+  last_news: NewsContext | null;
+  portfolio: Portfolio;
+  open_positions: OpenPosition[];
+  agent_votes: AgentVote[];
+  risk_health: RiskHealth;
+  errors: { message: string; ts: string }[];
+  trading_mode: "FUTURES" | "SPOT";
+  active_position: ActivePosition | null;
+  hard_stop_message: string | null;
+}
+
+export interface WsMessage {
+  event: string;
+  data: unknown;
+  ts: string;
+}
