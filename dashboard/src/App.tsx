@@ -76,7 +76,7 @@ function DesktopMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>
         gap: 10,
         alignItems: "stretch",
       }}>
-        <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} />
+        <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} intervalSeconds={state.config?.analysis_interval_seconds} />
         <MarketChart symbol={symbol} leverage={state.active_position?.leverage} cols={4} />
       </div>
       <PnLChart />
@@ -90,7 +90,7 @@ function DesktopMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>
 function TabletMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>["state"]; symbol: string }) {
   return (
     <ScrollMain>
-      <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} />
+      <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} intervalSeconds={state.config?.analysis_interval_seconds} />
       <MarketChart symbol={symbol} leverage={state.active_position?.leverage} cols={2} />
       <PnLChart />
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={1} />
@@ -119,7 +119,7 @@ function MobileContent({ tab, state, symbol }: {
 }) {
   if (tab === "overview") return (
     <MobileScrollArea>
-      <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} />
+      <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} intervalSeconds={state.config?.analysis_interval_seconds} />
       <MarketChart symbol={symbol} leverage={state.active_position?.leverage} cols={2} />
       <PnLChart />
     </MobileScrollArea>

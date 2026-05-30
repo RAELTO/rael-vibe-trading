@@ -80,6 +80,15 @@ Responde UNICAMENTE con JSON valido, sin markdown, con esta estructura exacta:
 }}
 
 Reglas:
+- Considera SOLO noticias de las ULTIMAS 48 HORAS. Ignora el telon de fondo ya conocido
+  (aprobacion historica de ETFs spot, adopcion institucional general, regulacion ya vigente):
+  eso es CONTEXTO, no un catalizador. No lo reportes como evento ni infles el impacto por ello.
+- market_impact=HIGH SOLO si verified_catalyst=true (evento fresco, fechado, con fuente seria).
+  NUNCA pongas market_impact=HIGH con verified_catalyst=false. Ante la duda usa LOW o MEDIUM.
+- Si solo hay ruido de fondo, analisis de terceros o noticias repetidas sin novedad concreta:
+  market_impact=LOW, overall_sentiment cercano a 0.0, recommended_action_bias=HOLD, avoid_trading=false.
+- overall_sentiment refleja el tono direccional NETO de noticias FRESCAS (-1 muy bajista a +1 muy alcista; 0 = neutral o sin novedad).
+- avoid_trading=true SOLO ante un evento sistemico adverso CONFIRMADO (hack mayor, depeg, shock regulatorio inesperado). En ningun otro caso.
 - verified_catalyst=true solo si hay un evento concreto verificable con fuente identificable.
 - catalyst_veracity 0.9+ requiere fuente primaria u oficial; 0.7 requiere multiples medios serios; menos de 0.7 debe dejar verified_catalyst=false.
 - Si no hay catalizador claro, usa HOLD, verified_catalyst=false y catalyst_veracity=0.0.
@@ -135,6 +144,25 @@ Reglas:
         default = self._default_context()
         default.update(context)
         default["asset_scores"].setdefault("BTCUSDT", 0.0)
+        # Guardarraíl: un "impacto HIGH" sin catalizador verificado es telón de fondo,
+        # no un evento accionable. Se degrada para que no frene al decisor por defecto.
+        if default.get("market_impact") == "HIGH" and not default.get("verified_catalyst"):
+            default["market_impact"] = "LOW"
+
+        # Guardarraíl: avoid_trading se reserva para EMERGENCIAS SISTÉMICAS reales
+        # (hack, exploit, depeg, halt, insolvencia, flash crash). Un sesgo bajista/alcista
+        # NO es motivo para frenar todo — el modelo puede operar la dirección (incl. SHORT).
+        # Si el motivo no es sistémico, se libera el freno y la noticia queda como contexto direccional.
+        if default.get("avoid_trading"):
+            reason = (default.get("avoid_reason") or "").lower()
+            systemic_kw = (
+                "hack", "exploit", "depeg", "desancl", "insolv", "halt", "suspens",
+                "flash crash", "colaps", "quiebra", "bancarrota", "ataque", "breach",
+                "freeze", "congel", "liquidación masiva", "liquidacion masiva",
+            )
+            if not any(k in reason for k in systemic_kw):
+                default["avoid_trading"] = False
+                default["avoid_reason"] = ""
         return default
 
     def _default_context(self) -> dict:

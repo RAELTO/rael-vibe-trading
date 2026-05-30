@@ -103,10 +103,10 @@ export function MarketChart({ symbol = "BTCUSDT", leverage, cols = 4 }: MarketCh
   // Build indicators list (always 4-col grid)
   const indicators: IndicatorCellProps[] = [];
   if (data) {
-    indicators.push({ label: "RSI", value: data.rsi.toFixed(1), color: rsiColor });
-    indicators.push({ label: "MACD", value: data.macd >= 0 ? `+${data.macd.toFixed(0)}` : data.macd.toFixed(0), color: macdColor });
-    indicators.push({ label: "EMA20", value: `${(data.ema20 / 1000).toFixed(2)}k` });
-    indicators.push({ label: "EMA50", value: `${(data.ema50 / 1000).toFixed(2)}k` });
+    if (data.rsi != null)   indicators.push({ label: "RSI", value: data.rsi.toFixed(1), color: rsiColor });
+    if (data.macd != null)  indicators.push({ label: "MACD", value: data.macd >= 0 ? `+${data.macd.toFixed(0)}` : data.macd.toFixed(0), color: macdColor });
+    if (data.ema20 != null) indicators.push({ label: "EMA20", value: `${(data.ema20 / 1000).toFixed(2)}k` });
+    if (data.ema50 != null) indicators.push({ label: "EMA50", value: `${(data.ema50 / 1000).toFixed(2)}k` });
     if (data.basis_pct != null)
       indicators.push({ label: "BB WIDTH", value: `${data.basis_pct.toFixed(2)}%`, color: basisColor });
     if (data.funding_rate != null)

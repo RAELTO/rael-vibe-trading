@@ -2,12 +2,21 @@ export type Decision = "BUY" | "SELL" | "HOLD";
 export type SystemStatus = "idle" | "running" | "stopped";
 export type RiskHealth = "HEALTHY" | "MODERATE" | "HIGH_RISK" | "CRITICAL";
 
+export interface VoteIndicators {
+  rsi?: number;
+  macd?: number;
+  ema20?: number;
+  ema50?: number;
+  price?: number;
+}
+
 export interface AgentVote {
   agent_id: string;
   vote: Decision;
   confidence: number;
   reasoning: string;
   ts: string;
+  indicators?: VoteIndicators;
 }
 
 export interface DecisionEntry {
@@ -60,6 +69,14 @@ export interface NewsContext {
   message?: string;
 }
 
+export interface RuntimeConfig {
+  analysis_interval_seconds: number;
+  trading_hours_enabled: boolean;
+  trading_hours_start: number;
+  trading_hours_end: number;
+  trading_timezone: string;
+}
+
 export interface AppState {
   system_status: SystemStatus;
   current_cycle: number;
@@ -73,6 +90,7 @@ export interface AppState {
   trading_mode: "FUTURES" | "SPOT";
   active_position: ActivePosition | null;
   hard_stop_message: string | null;
+  config?: RuntimeConfig;
 }
 
 export interface WsMessage {

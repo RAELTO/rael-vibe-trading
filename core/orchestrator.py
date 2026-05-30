@@ -11,11 +11,13 @@ Uso:
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
 import traceback
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import uvicorn
 from dotenv import load_dotenv
@@ -88,6 +90,14 @@ CLAUDE_AUDIT_ENABLED = os.getenv("CLAUDE_AUDIT_ENABLED", "true").lower() == "tru
 CLAUDE_AUDIT_MIN_CONF = float(os.getenv("CLAUDE_AUDIT_MIN_CONF", "0.58"))
 CLAUDE_AUDIT_MAX_CONF = float(os.getenv("CLAUDE_AUDIT_MAX_CONF", "0.66"))
 
+# Horario de trading — limita SOLO el loop de decisiones (el monitor de posiciones sigue 24/7).
+# Ventana [START, END) en la zona TRADING_TIMEZONE. Si START > END, la ventana cruza medianoche.
+TRADING_HOURS_ENABLED = os.getenv("TRADING_HOURS_ENABLED", "false").lower() == "true"
+TRADING_HOURS_START   = int(os.getenv("TRADING_HOURS_START", "8"))
+TRADING_HOURS_END     = int(os.getenv("TRADING_HOURS_END", "20"))
+TRADING_TIMEZONE      = os.getenv("TRADING_TIMEZONE", "UTC")
+OFF_HOURS_RECHECK     = 300   # re-chequear cada 5 min cuando estamos fuera de horario
+
 # Trailing stop — solo activo en modo FUTURES
 TRAIL_ACTIVATION_PCT = 0.008   # precio debe moverse +0.8% a favor antes de activar
 TRAIL_DISTANCE_PCT   = 0.012   # SL se mantiene 1.2% del precio actual (< 1.5% inicial)
@@ -114,6 +124,22 @@ def _log(msg: str, level: str = "INFO"):
     tag = {"INFO": "\033[36m[INFO]\033[0m", "WARN": "\033[33m[WARN]\033[0m",
            "ERR": "\033[31m[ERR ]\033[0m", "OK": "\033[32m[ OK ]\033[0m"}.get(level, "[    ]")
     print(f"{tag} {_ts()} {msg}")
+
+
+def _silence_connection_reset(loop, context):
+    """
+    Exception handler del event loop.
+
+    En Windows (ProactorEventLoop), cuando un cliente WebSocket del dashboard
+    cierra la conexión de golpe (recarga de página, HMR de Vite), asyncio lanza
+    ConnectionResetError [WinError 10054] desde
+    _ProactorBasePipeTransport._call_connection_lost al hacer socket.shutdown().
+    Es ruido cosmético inofensivo — lo silenciamos y delegamos el resto.
+    """
+    exc = context.get("exception")
+    if isinstance(exc, ConnectionResetError):
+        return
+    loop.default_exception_handler(context)
 
 
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
@@ -245,6 +271,14 @@ class TradingOrchestrator:
 
         # Sincronizar balance inicial según el modo activo
         app_state["trading_mode"] = self.trading_mode
+        # Publicar config runtime para que el frontend no hardcodee el intervalo/horario
+        app_state["config"] = {
+            "analysis_interval_seconds": ANALYSIS_INTERVAL,
+            "trading_hours_enabled":     TRADING_HOURS_ENABLED,
+            "trading_hours_start":       TRADING_HOURS_START,
+            "trading_hours_end":         TRADING_HOURS_END,
+            "trading_timezone":          TRADING_TIMEZONE,
+        }
         _log(f"Modo de trading: {self.trading_mode}", "OK")
         try:
             if self.trading_mode == "FUTURES":
@@ -300,6 +334,67 @@ class TradingOrchestrator:
         except Exception as e:
             return e
 
+    def _resolve_close_from_binance(self, trade: dict) -> tuple[float, str]:
+        """
+        Determina el precio y la razón de cierre REALES de un trade cuya posición ya no
+        existe en Binance, consultando el historial (REALIZED_PNL + fills de cierre).
+
+        Devuelve (exit_price, exit_reason). Si Binance no responde, hace fallback
+        conservador a (entry_price, "OFFLINE_CLOSE"). Compartido por la reconciliación
+        de arranque y por el monitor de posiciones, para que un cierre por TP/SL nunca
+        se registre erróneamente como LIQUIDATED con PnL 0.
+        """
+        symbol = trade["symbol"]
+        exit_price  = trade["entry_price"]   # fallback conservador
+        exit_reason = "OFFLINE_CLOSE"
+        try:
+            ts_open = trade.get("ts_open", "")
+            start_ms = (
+                int(datetime.fromisoformat(ts_open).timestamp() * 1000)
+                if ts_open else None
+            )
+
+            # a) PnL realizado desde Binance income history
+            income_records = self.futures.client.futures_income_history(
+                symbol=symbol,
+                incomeType="REALIZED_PNL",
+                startTime=start_ms,
+                limit=20,
+            )
+            realized_pnl = (
+                sum(float(r["income"]) for r in income_records)
+                if income_records else None
+            )
+
+            # b) Fills de cierre para obtener el precio de salida real
+            fills = self.futures.client.futures_account_trades(
+                symbol=symbol,
+                startTime=start_ms,
+                limit=50,
+            )
+            entry_side  = trade["side"]
+            close_side  = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
+            close_fills = [f for f in (fills or []) if f["side"] == close_side]
+            if close_fills:
+                exit_price = float(close_fills[-1]["price"])
+
+            # c) Inferir exit_reason a partir del PnL real y la cercanía al SL
+            sl = trade.get("sl_price")
+            tp = trade.get("tp_price")
+            if realized_pnl is not None:
+                if realized_pnl > 0:
+                    exit_reason = "TP"
+                elif tp and sl and abs(exit_price - sl) <= abs(sl * 0.002):
+                    exit_reason = "SL"
+                elif realized_pnl < -(trade["entry_price"] * trade["quantity"] * 0.05):
+                    exit_reason = "LIQUIDATED"
+                else:
+                    exit_reason = "SL"
+        except Exception as e:
+            _log(f"[Reconcile] Error buscando cierre en Binance: {e} — usando entry_price", "WARN")
+
+        return exit_price, exit_reason
+
     async def _reconcile_open_trades(self):
         """
         Verifica al arrancar que cada trade OPEN en la DB tenga posición real en Binance.
@@ -341,58 +436,7 @@ class TradingOrchestrator:
                 "WARN",
             )
 
-            exit_price  = trade["entry_price"]  # fallback conservador
-            exit_reason = "OFFLINE_CLOSE"
-
-            try:
-                ts_open = trade.get("ts_open", "")
-                start_ms = (
-                    int(datetime.fromisoformat(ts_open).timestamp() * 1000)
-                    if ts_open else None
-                )
-
-                # a) PnL realizado desde Binance income history
-                income_records = self.futures.client.futures_income_history(
-                    symbol=symbol,
-                    incomeType="REALIZED_PNL",
-                    startTime=start_ms,
-                    limit=20,
-                )
-                realized_pnl = (
-                    sum(float(r["income"]) for r in income_records)
-                    if income_records else None
-                )
-
-                # b) Fills de cierre para obtener precio de salida real
-                fills = self.futures.client.futures_account_trades(
-                    symbol=symbol,
-                    startTime=start_ms,
-                    limit=50,
-                )
-                entry_side  = trade["side"]
-                close_side  = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
-                close_fills = [f for f in (fills or []) if f["side"] == close_side]
-
-                if close_fills:
-                    # Precio ponderado del último cierre
-                    last = close_fills[-1]
-                    exit_price = float(last["price"])
-
-                # c) Inferir exit_reason
-                sl = trade.get("sl_price")
-                tp = trade.get("tp_price")
-                if realized_pnl is not None:
-                    if realized_pnl > 0:
-                        exit_reason = "TP"
-                    elif tp and sl and abs(exit_price - sl) <= abs(sl * 0.002):
-                        exit_reason = "SL"
-                    elif realized_pnl < -(trade["entry_price"] * trade["quantity"] * 0.05):
-                        exit_reason = "LIQUIDATED"
-                    else:
-                        exit_reason = "SL"
-
-            except Exception as e:
-                _log(f"[Reconcile] Error buscando cierre en Binance: {e} — usando entry_price", "WARN")
+            exit_price, exit_reason = self._resolve_close_from_binance(trade)
 
             # ── 3. Cancelar órdenes residuales ────────────────────────────────────
             try:
@@ -457,9 +501,41 @@ class TradingOrchestrator:
 
     # ── Trading loop ──────────────────────────────────────────────────────────
 
+    def _within_trading_hours(self) -> bool:
+        """
+        True si la hora actual cae dentro de la ventana [START, END) en TRADING_TIMEZONE.
+        Solo aplica al loop de decisiones; el monitor de posiciones corre 24/7.
+        Si la zona horaria es inválida, hace fallback a UTC (no bloquea por error de config).
+        """
+        if not TRADING_HOURS_ENABLED:
+            return True
+        if TRADING_TIMEZONE.upper() == "UTC":
+            tz = timezone.utc   # no depende de tzdata
+        else:
+            try:
+                tz = ZoneInfo(TRADING_TIMEZONE)
+            except (ZoneInfoNotFoundError, ValueError):
+                _log(f"TRADING_TIMEZONE inválida '{TRADING_TIMEZONE}' (¿falta tzdata?), usando UTC.", "WARN")
+                tz = timezone.utc
+        hour = datetime.now(tz).hour
+        if TRADING_HOURS_START == TRADING_HOURS_END:
+            return True   # ventana de 24h
+        if TRADING_HOURS_START < TRADING_HOURS_END:
+            return TRADING_HOURS_START <= hour < TRADING_HOURS_END
+        # Ventana que cruza medianoche (p.ej. 20→6)
+        return hour >= TRADING_HOURS_START or hour < TRADING_HOURS_END
+
     async def run_trading_loop(self):
         """Loop principal de trading — un ciclo cada ANALYSIS_INTERVAL segundos."""
         _log(f"Trading loop iniciado. Intervalo: {ANALYSIS_INTERVAL}s ({ANALYSIS_INTERVAL//60} min)", "INFO")
+        if TRADING_HOURS_ENABLED:
+            _log(
+                f"Horario de trading activo: {TRADING_HOURS_START:02d}:00–{TRADING_HOURS_END:02d}:00 "
+                f"{TRADING_TIMEZONE} (el monitor de posiciones sigue 24/7).",
+                "INFO",
+            )
+
+        self._was_off_hours = False
 
         while True:
             # Hard stop — no continuar si se alcanzó el límite de pérdida
@@ -467,6 +543,31 @@ class TradingOrchestrator:
                 _log("Sistema en HARD STOP. Trading suspendido. Reinicia assets para continuar.", "ERR")
                 await asyncio.sleep(ANALYSIS_INTERVAL)
                 continue
+
+            # Horario de trading — fuera de la ventana, pausar SOLO las decisiones nuevas.
+            # Una posición abierta sigue gestionada por run_position_monitor_loop (SL/TP/trailing).
+            if not self._within_trading_hours():
+                _log(
+                    f"Fuera de horario de trading ({TRADING_HOURS_START:02d}:00–"
+                    f"{TRADING_HOURS_END:02d}:00 {TRADING_TIMEZONE}) — decisor en pausa.",
+                    "INFO",
+                )
+                self._was_off_hours = True
+                # Mantener vivo el dashboard (precio, indicadores, balance) sin gastar LLM
+                await self._refresh_idle_dashboard()
+                await asyncio.sleep(min(ANALYSIS_INTERVAL, OFF_HOURS_RECHECK))
+                continue
+
+            # Reanudación tras una pausa: reconciliar contra Binance antes de decidir.
+            # Salvaguarda por si el monitor no alcanzó a registrar un cierre durante la pausa.
+            if self._was_off_hours:
+                self._was_off_hours = False
+                _log("Reanudando tras pausa — reconciliando estado con Binance...", "INFO")
+                try:
+                    if self.trading_mode == "FUTURES":
+                        await self._reconcile_open_trades()
+                except Exception as e:
+                    _log(f"Error en reconciliación de reanudación: {e}", "WARN")
 
             try:
                 await self._run_cycle()
@@ -672,7 +773,14 @@ class TradingOrchestrator:
             f"DEEPSEEK DECISION: {vote} | conviction={conviction:.3f}",
             "OK" if vote != "HOLD" else "INFO",
         )
-        await broadcast_agent_vote(signal.agent_id, vote, conviction, reasoning)
+        vote_indicators = {
+            "rsi":   market_data.get("rsi"),
+            "macd":  market_data.get("macd"),
+            "ema20": market_data.get("ema20"),
+            "ema50": market_data.get("ema50"),
+            "price": market_data.get("price"),
+        }
+        await broadcast_agent_vote(signal.agent_id, vote, conviction, reasoning, indicators=vote_indicators)
         await broadcast_decision(symbol, vote, conviction, reasoning)
 
         decision_result = {
@@ -932,8 +1040,9 @@ class TradingOrchestrator:
                     f"{d['symbol']}:{d['decision']}(score={d['score']:.2f}, {d['ts'][:10]})"
                     for d in db_decisions
                 )
-        except Exception:
+        except Exception as e:
             # Fallback a memoria en RAM si la DB falla
+            _log(f"[Context] DB de decisiones recientes falló, usando RAM: {e}", "WARN")
             recent_str = " | ".join(
                 f"{d['symbol']}:{d['decision']}({d['score']:.2f})"
                 for d in self._decision_log[:3]
@@ -946,8 +1055,8 @@ class TradingOrchestrator:
             if snapshots:
                 s = snapshots[0]
                 pnl_context = f" | Accumulated PnL: {s['pnl']:+.2f} USDT ({s['pnl_pct']:+.2f}%)"
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[Context] PnL acumulado no disponible: {e}", "WARN")
 
         # Post-mortem de época anterior si existe
         postmortem_ctx = ""
@@ -979,35 +1088,35 @@ class TradingOrchestrator:
                     f"Avg loss: ${stats['avg_loss']:.2f} | "
                     f"Racha actual: {streak_txt}"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[Context] Historial/stats de trades no disponible: {e}", "WARN")
 
         # Análisis previos del pipeline (Phase 1 últimos ciclos)
         prev_votes_str = "No executed trades yet"
         try:
             prev_votes_str = self.store.get_last_trade_context()
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[Context] Contexto de último trade no disponible: {e}", "WARN")
 
         phase1_history_str = ""
         try:
             phase1_history_str = self.store.get_phase1_summary(cycles=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[Context] Resumen phase1 no disponible: {e}", "WARN")
 
         # Rendimiento histórico por agente (aciertos/errores en trades reales)
         agent_perf_str = ""
         try:
             agent_perf_str = self.store.get_agent_performance_summary(self.trading_mode)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[Context] Rendimiento por agente no disponible: {e}", "WARN")
 
         # Eventos críticos del sistema (liquidaciones, resets, cambios de modo)
         system_events_str = ""
         try:
             system_events_str = self.store.get_system_events_summary(limit=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[Context] Eventos de sistema no disponibles: {e}", "WARN")
 
         ctx: dict = {
             "news_sentiment":       news_ctx.get("overall_sentiment", 0.0),
@@ -1112,23 +1221,55 @@ class TradingOrchestrator:
 
     async def _check_closed_trades(self):
         """
-        Detecta si algún trade abierto fue cerrado por SL/TP entre ciclos,
-        consultando las órdenes FILLED en Binance y cruzando con la DB.
+        Detecta si algún trade abierto fue cerrado (SL/TP/liquidación) entre ciclos.
+
+        Para FUTURES usa _resolve_close_from_binance como ÚNICA fuente de verdad
+        (precio y razón reales desde el historial) — coherente con el PositionMonitor
+        y la reconciliación de arranque. Para SPOT mantiene el emparejamiento por precio.
         """
         open_trades = self.store.get_open_trades()
         if not open_trades:
             return
 
+        # ── FUTURES: fuente de verdad única ───────────────────────────────────
+        if self.trading_mode == "FUTURES":
+            for trade in open_trades:
+                symbol = trade["symbol"]
+                try:
+                    pos = self.futures.get_position(symbol)
+                except Exception as e:
+                    _log(f"[CheckClosed] Error consultando {symbol}: {e}", "WARN")
+                    continue
+                if pos:
+                    continue   # sigue abierta
+
+                try:
+                    self.futures.cancel_all_orders(symbol)
+                except Exception:
+                    pass
+
+                exit_price, exit_reason = self._resolve_close_from_binance(trade)
+                pnl = self.store.close_trade(trade["id"], self._cycle, exit_price, exit_reason)
+                if self._active_trade_id == trade["id"]:
+                    self._active_trade_id = None
+                    self._sl_order_id = None
+                if self.risk.state.open_positions > 0:
+                    self.risk.state.open_positions -= 1
+                await broadcast_position_update(None)
+                _log(
+                    f"[CheckClosed] Trade #{trade['id']} cerrado: {exit_reason} "
+                    f"@ ${exit_price:,.2f} | PnL={pnl:+.4f} USDT",
+                    "OK" if exit_reason == "TP" else "WARN",
+                )
+            return
+
+        # ── SPOT: emparejamiento por precio (heurístico legacy) ────────────────
         try:
             filled = self._client.get_recent_filled_orders(TRADING_UNIVERSE[0], limit=30)
         except Exception:
             return
 
-        filled_ids = {o["order_id"] for o in filled}
-
         for trade in open_trades:
-            # Un trade abierto tiene SL y TP pendientes; si alguno se llenó, cerrar el trade
-            # Aproximación: buscar orden FILLED cuyo precio coincide con sl_price o tp_price
             sl  = trade.get("sl_price")
             tp  = trade.get("tp_price")
             exit_price  = None
@@ -1374,6 +1515,34 @@ class TradingOrchestrator:
         budget_pnl_pct  = round(budget_pnl / TRADING_BUDGET * 100, 4) if TRADING_BUDGET > 0 else 0.0
         self.store.save_portfolio(self._cycle, binance_balance, budget_pnl, budget_pnl_pct)
         await broadcast_portfolio(binance_balance, effective_budget, budget_pnl, budget_pnl_pct)
+
+    async def _refresh_idle_dashboard(self):
+        """
+        Refresco ligero del dashboard mientras el decisor está pausado (fuera de horario).
+        Solo usa la API de Binance (sin LLM, sin costo) para mantener vivos el precio,
+        los indicadores y el balance. NO guarda snapshot en DB para no inflar el historial.
+        """
+        try:
+            balance = (
+                self.futures.get_futures_balance()
+                if self.trading_mode == "FUTURES"
+                else self.spot.get_portfolio_value()
+            )
+        except Exception:
+            balance = self.risk.state.portfolio_balance
+
+        try:
+            for sym in self._pick_symbols():
+                app_state.setdefault("market_data", {})[sym] = self._client.get_market_data(sym)
+        except Exception as e:
+            _log(f"[Idle] Error refrescando market data: {e}", "WARN")
+
+        try:
+            budget_pnl = round(self.store.get_total_pnl(), 4)
+            budget_pnl_pct = round(budget_pnl / TRADING_BUDGET * 100, 4) if TRADING_BUDGET > 0 else 0.0
+            await broadcast_portfolio(balance, self._effective_budget(), budget_pnl, budget_pnl_pct)
+        except Exception as e:
+            _log(f"[Idle] Error actualizando portfolio: {e}", "WARN")
 
     # ── Reconnect loop ────────────────────────────────────────────────────────
 
@@ -1635,41 +1804,55 @@ class TradingOrchestrator:
                             (t for t in open_trades if t["id"] == self._active_trade_id), None
                         )
                         if active:
-                            # La posición no existe en Binance pero el trade sigue OPEN en DB
-                            # → probable liquidación
+                            # La posición ya no existe en Binance. Puede ser TP, SL, liquidación
+                            # o cierre manual. Resolver el precio/razón REALES desde el historial
+                            # (NO asumir liquidación: durante la pausa este es el único camino).
                             balance = self.futures.get_futures_balance()
+                            try:
+                                self.futures.cancel_all_orders(TRADING_UNIVERSE[0])
+                            except Exception:
+                                pass
+                            exit_price, exit_reason = self._resolve_close_from_binance(active)
                             pnl = self.store.close_trade(
                                 self._active_trade_id, self._cycle,
-                                active["entry_price"],  # precio aproximado
-                                "LIQUIDATED",
+                                exit_price, exit_reason,
                             )
                             self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
                             self._active_trade_id = None
+                            self._sl_order_id = None
                             await broadcast_position_update(None)
 
+                            event_type = "LIQUIDATION" if exit_reason == "LIQUIDATED" else "POSITION_CLOSE"
                             self.store.log_system_event(
-                                "LIQUIDATION", "FUTURES", balance,
+                                event_type, "FUTURES", balance,
                                 {
-                                    "trade_id": active["id"],
+                                    "trade_id":   active["id"],
                                     "entry_price": active["entry_price"],
-                                    "side": active["side"],
-                                    "reason": "Position disappeared — likely liquidated",
+                                    "exit_price": exit_price,
+                                    "exit_reason": exit_reason,
+                                    "side":       active["side"],
+                                    "pnl":        pnl,
+                                    "detected_by": "position_monitor",
                                 },
                             )
                             _log(
-                                f"[Monitor] LIQUIDACIÓN detectada en trade #{active['id']}. "
-                                f"Balance: ${balance:.2f}",
-                                "ERR",
+                                f"[Monitor] Trade #{active['id']} cerrado: {exit_reason} "
+                                f"@ ${exit_price:,.2f} | PnL={pnl:+.4f} USDT | Balance: ${balance:.2f}",
+                                "ERR" if exit_reason == "LIQUIDATED" else "OK",
                             )
-                            await broadcast_error(
-                                f"LIQUIDATION detected: trade #{active['id']} @ ${active['entry_price']:,.0f}"
-                            )
+                            if exit_reason == "LIQUIDATED":
+                                await broadcast_error(
+                                    f"LIQUIDATION detected: trade #{active['id']} @ ${exit_price:,.0f}"
+                                )
             except Exception as e:
                 _log(f"[Monitor] Error: {e}", "WARN")
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
     async def run(self):
+        # Silenciar el ruido de ConnectionResetError de los WebSocket en Windows
+        asyncio.get_running_loop().set_exception_handler(_silence_connection_reset)
+
         await self.startup()
 
         # Arrancar el API server primero — el dashboard puede conectarse
@@ -1689,13 +1872,32 @@ class TradingOrchestrator:
 
         # Lanzar el resto de loops (api_task ya está corriendo)
         _log("Iniciando loops paralelos: News + Trading + Reconnect + Monitor", "OK")
-        await asyncio.gather(
+        tasks = [
             api_task,
-            self.run_news_loop(),
-            self.run_trading_loop(),
-            self.run_reconnect_loop(),
-            self.run_position_monitor_loop(),
-        )
+            asyncio.create_task(self.run_news_loop()),
+            asyncio.create_task(self.run_trading_loop()),
+            asyncio.create_task(self.run_reconnect_loop()),
+            asyncio.create_task(self.run_position_monitor_loop()),
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            # Ctrl+C: asyncio.run cancela la tarea principal → llegamos aquí.
+            pass
+        finally:
+            await self._shutdown(tasks)
+
+    async def _shutdown(self, tasks: list):
+        """Apaga el servidor HTTP y cancela todos los loops de forma ordenada."""
+        _log("Apagando: cerrando servidor y loops...", "WARN")
+        # Pedir a uvicorn que cierre el puerto limpiamente
+        if getattr(self, "_api_server", None) is not None:
+            self._api_server.should_exit = True
+        # Cancelar todas las tareas y esperar a que terminen
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        _log("Apagado completo.", "OK")
 
     async def _serve_api(self):
         """Arranca el servidor FastAPI dentro del mismo event loop."""
@@ -1707,6 +1909,10 @@ class TradingOrchestrator:
             timeout_graceful_shutdown=2,
         )
         server = uvicorn.Server(config)
+        self._api_server = server
+        # No dejar que uvicorn capture SIGINT/SIGTERM: queremos que asyncio.run maneje
+        # Ctrl+C y cancele TODOS los loops de forma limpia (no solo el servidor HTTP).
+        server.capture_signals = lambda: contextlib.nullcontext()
         _log(f"API en http://{API_HOST}:{API_PORT}", "OK")
         await server.serve()
 

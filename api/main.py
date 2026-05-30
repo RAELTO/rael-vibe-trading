@@ -1,7 +1,7 @@
 import os
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from contextlib import asynccontextmanager
 
@@ -28,7 +28,7 @@ class ConnectionManager:
 
     async def broadcast(self, event: str, data: Any):
         """Envía un evento a todos los clientes conectados."""
-        message = json.dumps({"event": event, "data": data, "ts": datetime.utcnow().isoformat()})
+        message = json.dumps({"event": event, "data": data, "ts": datetime.now(timezone.utc).isoformat()})
         dead = []
         for ws in self.active:
             try:
@@ -60,6 +60,13 @@ app_state: dict = {
     "market_data":    {},
     "active_position":  None,        # posición futures activa
     "hard_stop_message": None,       # mensaje de hard stop si se alcanzó el límite
+    "config":         {              # configuración runtime (la setea el orquestador al arrancar)
+        "analysis_interval_seconds": 900,
+        "trading_hours_enabled":     False,
+        "trading_hours_start":       8,
+        "trading_hours_end":         20,
+        "trading_timezone":          "UTC",
+    },
 }
 
 
@@ -89,7 +96,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "ts": datetime.utcnow().isoformat()}
+    return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/state")
@@ -201,7 +208,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.send_text(json.dumps({
         "event": "init",
         "data":  app_state,
-        "ts":    datetime.utcnow().isoformat(),
+        "ts":    datetime.now(timezone.utc).isoformat(),
     }))
     try:
         while True:
@@ -221,13 +228,14 @@ async def broadcast_cycle_start(cycle: int, pairs: list):
     await manager.broadcast("cycle_start", {"cycle": cycle, "pairs": pairs})
 
 
-async def broadcast_agent_vote(agent_id: str, vote: str, confidence: float, reasoning: str):
+async def broadcast_agent_vote(agent_id: str, vote: str, confidence: float, reasoning: str, indicators: dict | None = None):
     vote_entry = {
         "agent_id":   agent_id,
         "vote":       vote,
         "confidence": confidence,
         "reasoning":  reasoning,
-        "ts":         datetime.utcnow().isoformat(),
+        "indicators": indicators,
+        "ts":         datetime.now(timezone.utc).isoformat(),
     }
     app_state["agent_votes"] = [vote_entry] + app_state["agent_votes"][:19]  # últimos 20
     await manager.broadcast("agent_vote", vote_entry)
@@ -239,7 +247,7 @@ async def broadcast_decision(symbol: str, decision: str, score: float, reason: s
         "decision": decision,
         "score":    score,
         "reason":   reason,
-        "ts":       datetime.utcnow().isoformat(),
+        "ts":       datetime.now(timezone.utc).isoformat(),
     }
     app_state["last_decision"] = entry
     await manager.broadcast("decision", entry)
@@ -253,7 +261,7 @@ async def broadcast_order(symbol: str, side: str, qty: float, price: float, sl: 
         "price":  price,
         "sl":     sl,
         "tp":     tp,
-        "ts":     datetime.utcnow().isoformat(),
+        "ts":     datetime.now(timezone.utc).isoformat(),
     }
     # Reemplaza en vez de acumular — solo 1 entrada activa por símbolo
     app_state["open_positions"] = [
@@ -287,7 +295,7 @@ async def broadcast_news(context: dict):
 
 
 async def broadcast_error(message: str):
-    entry = {"message": message, "ts": datetime.utcnow().isoformat()}
+    entry = {"message": message, "ts": datetime.now(timezone.utc).isoformat()}
     app_state["errors"] = [entry] + app_state["errors"][:9]  # últimos 10
     await manager.broadcast("error", entry)
 
@@ -306,4 +314,4 @@ async def broadcast_mode_change(mode: str):
 
 async def broadcast_hard_stop(message: str):
     app_state["hard_stop_message"] = message
-    await manager.broadcast("hard_stop", {"message": message, "ts": datetime.utcnow().isoformat()})
+    await manager.broadcast("hard_stop", {"message": message, "ts": datetime.now(timezone.utc).isoformat()})

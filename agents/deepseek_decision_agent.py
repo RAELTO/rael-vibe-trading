@@ -23,7 +23,8 @@ class DeepSeekDecisionAgent(BaseAgent):
         "You are the primary decision engine for a BTCUSDT USD-M perpetual futures test system. "
         "BUY means open LONG, SELL means open SHORT, HOLD means no new trade. "
         "Analyze price action, trend, indicators, derivatives positioning, recent trade outcomes, "
-        "current news context, and portfolio risk. Be conservative: no clear edge means HOLD. "
+        "current news context, and portfolio risk. Take a directional trade when technicals and "
+        "positioning lean one way with favorable reward:risk; HOLD only when signals genuinely conflict. "
         "Do not size the position and do not bypass risk rules; only decide direction and conviction. "
         "Futures rules: avoid chasing extended moves, prefer confluence between EMA trend/MACD/RSI, "
         "respect support/resistance room for SL=1.5% and TP=2.5%, and penalize crowded positioning. "
@@ -97,6 +98,41 @@ class DeepSeekDecisionAgent(BaseAgent):
             "reasoning": (reason_match.group(1).strip() if reason_match else "Recovered from malformed DeepSeek JSON."),
         }
 
+    def _log_decision_debug(self, market_data: dict, data: dict, raw_text: str):
+        """
+        Debug temporal: imprime en consola la convicción junto a la lectura técnica
+        (RSI/MACD/EMA) y vuelca el JSON crudo de DeepSeek a logs/deepseek_decisions.log.
+        Sirve para verificar que la convicción se mueve con los técnicos. Quitar cuando ya no haga falta.
+        """
+        try:
+            kl = data.get("key_levels", {}) or {}
+            self.log(
+                f"[debug] vote={data.get('vote')} conf={data.get('confidence')} "
+                f"setup={data.get('setup_quality')} dim={data.get('dominant_dimension')} "
+                f"| RSI={market_data.get('rsi')} MACD={market_data.get('macd')} "
+                f"EMA20={market_data.get('ema20')} EMA50={market_data.get('ema50')} "
+                f"price={market_data.get('price')} "
+                f"| levels S/R={kl.get('support')}/{kl.get('resistance')} "
+                f"conflicts={data.get('conflicts') or 'none'}",
+                "INFO",
+            )
+        except Exception:
+            pass
+        try:
+            root = Path(__file__).resolve().parents[1]
+            log_dir = root / "logs"
+            log_dir.mkdir(exist_ok=True)
+            with (log_dir / "deepseek_decisions.log").open("a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.now(timezone.utc).isoformat()} ---\n")
+                f.write(
+                    f"RSI={market_data.get('rsi')} MACD={market_data.get('macd')} "
+                    f"EMA20={market_data.get('ema20')} EMA50={market_data.get('ema50')} "
+                    f"price={market_data.get('price')}\n"
+                )
+                f.write((raw_text or "<empty>") + "\n")
+        except Exception:
+            pass
+
     @staticmethod
     def _log_bad_json(raw: str, error: Exception):
         try:
@@ -136,13 +172,15 @@ class DeepSeekDecisionAgent(BaseAgent):
         )
 
         news_block = f"""
-GPT web-search market context:
+GPT web-search market context (SECONDARY — technicals lead):
 - Sentiment: {context.get('news_sentiment', 0.0):+.2f}
-- Impact: {context.get('news_impact', 'LOW')}
+- Impact label: {context.get('news_impact', 'LOW')}  (only meaningful if verified_catalyst is true)
+- Verified catalyst: {context.get('verified_catalyst', False)} (veracity {context.get('catalyst_veracity', 0.0)}, direction inferred from evidence)
+- Avoid trading flag: {context.get('avoid_trading', False)}
 - Bias: {context.get('news_bias', 'HOLD')}
 - Key events: {', '.join(context.get('key_events', [])) or 'none'}
 - Macro summary: {context.get('geopolitical_summary', '')}
-- Catalyst evidence: {context.get('catalyst_evidence', '')}
+- Catalyst evidence: {context.get('catalyst_evidence', '') or 'none'}
 """
 
         prompt = f"""Make one final trading decision for {symbol} perpetual futures.
@@ -182,16 +220,28 @@ Portfolio and memory:
 {fmt_active_position(context)}
 
 Decision rules:
-- BUY only when long setup has directional edge and room to TP before major resistance.
-- SELL only when short setup has directional edge and room to TP before major support.
-- HOLD when trend, momentum, positioning, and news are mixed.
-- Conviction below 0.60 should usually be HOLD.
-- If news is HIGH risk or avoid_trading is true, prefer HOLD unless a verified catalyst strongly supports direction.
+- BUY when the long setup has a reasonable directional lean (confluence among trend/EMA alignment,
+  MACD, RSI) and room to TP before major resistance. You do NOT need a textbook-perfect edge —
+  a clear lean with favorable reward:risk is enough.
+- SELL when the short setup has a reasonable directional lean and room to TP before major support.
+- HOLD only when signals genuinely conflict (e.g. trend up but momentum down at resistance) or there
+  is no room to the target. Do not HOLD just because the move is not "obvious".
+- Conviction below 0.58 should be HOLD.
+- "confidence" is your REAL probability that the trade reaches TP before SL (for BUY/SELL),
+  or how strongly you would avoid trading (for HOLD). Use the full 0.0-1.0 range and report
+  your genuine conviction — do NOT default to 0.0. A reasoned HOLD still has a confidence value.
+- Base the decision PRIMARILY on technicals and derivatives positioning (price action, trend,
+  EMA/MACD/RSI, support/resistance room, funding, OI, long/short ratio). News is SECONDARY context.
+- Do NOT HOLD merely because the news "Impact" label is HIGH or sentiment is neutral. A HIGH impact
+  label WITHOUT a verified catalyst is background noise and is NOT a reason to skip a valid technical setup.
+- Let news override the technical read ONLY when avoid_trading is true, or when there is a verified
+  catalyst (catalyst_veracity high) that directly CONTRADICTS the trade direction. A verified catalyst
+  that supports the direction may raise conviction.
 
 Respond only with JSON:
 {{
   "vote": "BUY|SELL|HOLD",
-  "confidence": 0.0,
+  "confidence": <number 0.0-1.0, your genuine conviction — never default to 0.0>,
   "dominant_dimension": "technical|positioning|news|risk|mixed",
   "setup_quality": "STRONG|MODERATE|WEAK|NO_TRADE",
   "key_levels": {{"support": 0.0, "resistance": 0.0}},
@@ -201,9 +251,9 @@ Respond only with JSON:
 
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=1600,
+            max_tokens=4000,                          # holgura para que el JSON quepa tras cualquier razonamiento
             temperature=0.0,
-            extra_body={"enable_thinking": False},
+            response_format={"type": "json_object"},  # fuerza salida JSON válida (DeepSeek lo soporta)
             messages=[
                 {"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -240,6 +290,9 @@ Respond only with JSON:
         except Exception:
             confidence = 0.0
         reasoning = str(data.get("reasoning", "")).strip() or "No reasoning provided."
+
+        # Debug temporal: correlacionar convicción con la lectura técnica + guardar JSON crudo.
+        self._log_decision_debug(market_data, data, raw_text)
 
         if data.get("recovered") is True:
             reasoning = f"Recovered from malformed JSON. {reasoning}"

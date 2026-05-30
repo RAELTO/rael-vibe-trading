@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { Badge, decisionVariant } from "./Badge";
 import type { DecisionEntry } from "../types";
 
-// 15-minute cycle interval in seconds
-const CYCLE_SECONDS = 900;
+// Fallback si el backend aún no envió la config (evento WS "init")
+const DEFAULT_CYCLE_SECONDS = 900;
 
 interface DecisionPanelProps {
   decision: DecisionEntry | null;
   tradingMode?: string;
+  intervalSeconds?: number;
 }
 
 function translateDecision(d: string, mode?: string) {
@@ -17,19 +18,19 @@ function translateDecision(d: string, mode?: string) {
   return d;
 }
 
-function useCycleProgress(lastTs: string | null) {
+function useCycleProgress(lastTs: string | null, cycleSeconds: number) {
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     if (!lastTs) { setProgress(0); return; }
     function update() {
       const elapsed = (Date.now() - new Date(lastTs as string).getTime()) / 1000;
-      setProgress(Math.min(1, elapsed / CYCLE_SECONDS));
+      setProgress(Math.max(0, Math.min(1, elapsed / cycleSeconds)));
     }
     update();
     const id = setInterval(update, 10_000);
     return () => clearInterval(id);
-  }, [lastTs]);
+  }, [lastTs, cycleSeconds]);
 
   return progress;
 }
@@ -85,9 +86,10 @@ function parseReason(raw: string): string {
   return cleaned || first;
 }
 
-export function DecisionPanel({ decision, tradingMode }: DecisionPanelProps) {
-  const cycleProgress = useCycleProgress(decision?.ts ?? null);
-  const minutesLeft = Math.max(0, Math.round((1 - cycleProgress) * (CYCLE_SECONDS / 60)));
+export function DecisionPanel({ decision, tradingMode, intervalSeconds }: DecisionPanelProps) {
+  const cycleSeconds = intervalSeconds ?? DEFAULT_CYCLE_SECONDS;
+  const cycleProgress = useCycleProgress(decision?.ts ?? null, cycleSeconds);
+  const minutesLeft = Math.max(0, Math.round((1 - cycleProgress) * (cycleSeconds / 60)));
 
   const sigColor = !decision
     ? "#8888aa"

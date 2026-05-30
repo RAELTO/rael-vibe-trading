@@ -87,6 +87,20 @@ function PhaseDivider({ label, color }: { label: string; color: string }) {
   );
 }
 
+// ── Technical indicator chip (RSI/MACD/EMA the decision was based on) ───────
+function IndChip({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <span style={{
+      fontSize: 10, fontFamily: "'JetBrains Mono', monospace",
+      background: "rgba(255,255,255,0.04)", borderRadius: 5, padding: "2px 7px",
+      whiteSpace: "nowrap",
+    }}>
+      <span style={{ color: "#44445a", marginRight: 4 }}>{label}</span>
+      <span style={{ color: color ?? "#e8e8f0", fontWeight: 600 }}>{value}</span>
+    </span>
+  );
+}
+
 // ── Single agent card (matches prototype AgentCard) ─────────────────────────
 function AgentCard({ vote, tradingMode, phaseKey }: {
   vote: AgentVote;
@@ -215,6 +229,26 @@ function AgentCard({ vote, tradingMode, phaseKey }: {
           }} />
         </div>
       </div>
+
+      {/* Technical chips — los indicadores que el decisor consideró (solo si vienen con el voto) */}
+      {vote.indicators && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {vote.indicators.rsi != null && (
+            <IndChip label="RSI" value={vote.indicators.rsi.toFixed(1)}
+              color={vote.indicators.rsi > 70 ? "#f05060" : vote.indicators.rsi < 30 ? "#22d27a" : "#e8e8f0"} />
+          )}
+          {vote.indicators.macd != null && (
+            <IndChip label="MACD" value={vote.indicators.macd >= 0 ? `+${vote.indicators.macd.toFixed(0)}` : vote.indicators.macd.toFixed(0)}
+              color={vote.indicators.macd >= 0 ? "#22d27a" : "#f05060"} />
+          )}
+          {vote.indicators.ema20 != null && (
+            <IndChip label="EMA20" value={`${(vote.indicators.ema20 / 1000).toFixed(2)}k`} />
+          )}
+          {vote.indicators.ema50 != null && (
+            <IndChip label="EMA50" value={`${(vote.indicators.ema50 / 1000).toFixed(2)}k`} />
+          )}
+        </div>
+      )}
 
       {/* Reasoning — flex:1 for phase1 so all cards in the row share the tallest height */}
       <p style={{

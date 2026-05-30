@@ -39,3 +39,4 @@ redis>=5.0.0
 # ===== UTILITIES =====
 pandas>=2.2.0
 numpy>=2.0.0
+tzdata>=2024.1   # zonas horarias para TRADING_TIMEZONE en Windows (zoneinfo)

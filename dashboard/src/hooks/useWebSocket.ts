@@ -36,6 +36,13 @@ const initialState: AppState = {
   trading_mode: "FUTURES",
   active_position: null,
   hard_stop_message: null,
+  config: {
+    analysis_interval_seconds: 900,
+    trading_hours_enabled: false,
+    trading_hours_start: 8,
+    trading_hours_end: 20,
+    trading_timezone: "UTC",
+  },
   ...loadPersistedState(),
 };
 
