@@ -1382,11 +1382,18 @@ class TradingOrchestrator:
                 "OK",
             )
 
-            # Colocar SL/TP automáticos y guardar SL order ID para trailing
+            # Colocar SL/TP automáticos y guardar SL order ID para trailing.
+            # NOTA: si la Algo API rechaza las órdenes condicionales, place_* devuelve {}
+            # (no lanza). En ese caso la posición queda sin protección en Binance y la
+            # red de seguridad del PositionMonitor (_enforce_tp_sl) cierra a mercado.
             try:
                 sl_result = self.futures.place_stop_loss(symbol, side, sl)
                 self._sl_order_id = sl_result.get("order_id")
-                self.futures.place_take_profit(symbol, side, tp)
+                tp_result = self.futures.place_take_profit(symbol, side, tp)
+                if not sl_result.get("order_id"):
+                    _log(f"[Futures] SL no colocado en Binance — monitor lo hará cumplir.", "WARN")
+                if not tp_result.get("order_id"):
+                    _log(f"[Futures] TP no colocado en Binance — monitor lo hará cumplir.", "WARN")
             except Exception as e:
                 _log(f"[Futures] SL/TP placement error: {e}", "WARN")
 
@@ -1732,13 +1739,104 @@ class TradingOrchestrator:
         except Exception as e:
             _log(f"[Trailing] Error al mover SL: {e}", "WARN")
 
+    async def _finalize_close(self, active: dict, detected_by: str = "position_monitor"):
+        """
+        Registra el cierre de un trade cuya posición ya no existe en Binance.
+        Fuente de verdad única: _resolve_close_from_binance (REALIZED_PNL + fills reales).
+        Reutilizado por la detección de cierre offline y por el cierre forzado por TP/SL.
+        """
+        balance = self.futures.get_futures_balance()
+        try:
+            self.futures.cancel_all_orders(TRADING_UNIVERSE[0])
+        except Exception:
+            pass
+        exit_price, exit_reason = self._resolve_close_from_binance(active)
+        pnl = self.store.close_trade(
+            self._active_trade_id, self._cycle, exit_price, exit_reason,
+        )
+        self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
+        self._active_trade_id = None
+        self._sl_order_id = None
+        await broadcast_position_update(None)
+
+        event_type = "LIQUIDATION" if exit_reason == "LIQUIDATED" else "POSITION_CLOSE"
+        self.store.log_system_event(
+            event_type, "FUTURES", balance,
+            {
+                "trade_id":    active["id"],
+                "entry_price": active["entry_price"],
+                "exit_price":  exit_price,
+                "exit_reason": exit_reason,
+                "side":        active["side"],
+                "pnl":         pnl,
+                "detected_by": detected_by,
+            },
+        )
+        _log(
+            f"[Monitor] Trade #{active['id']} cerrado: {exit_reason} "
+            f"@ ${exit_price:,.2f} | PnL={pnl:+.4f} USDT | Balance: ${balance:.2f}",
+            "ERR" if exit_reason == "LIQUIDATED" else "OK",
+        )
+        if exit_reason == "LIQUIDATED":
+            await broadcast_error(
+                f"LIQUIDATION detected: trade #{active['id']} @ ${exit_price:,.0f}"
+            )
+
+    async def _enforce_tp_sl(self, pos: dict) -> bool:
+        """
+        Red de seguridad: si el mark price ya cruzó el TP o el SL, cierra la posición a
+        mercado y la finaliza. Es imprescindible porque la Algo API del testnet puede
+        rechazar las órdenes condicionales SL/TP (place_* devuelve {} sin lanzar),
+        dejando la posición sin protección en Binance. Devuelve True si cerró.
+        """
+        if not self._active_trade_id:
+            return False
+        tp   = pos.get("tp_price")
+        sl   = pos.get("sl_price")
+        side = pos["side"]
+        symbol = TRADING_UNIVERSE[0]
+        mark = pos.get("mark_price") or self.futures.get_mark_price(symbol)
+        if not mark:
+            return False
+
+        if side == "LONG":
+            hit_tp = bool(tp) and mark >= tp
+            hit_sl = bool(sl) and mark <= sl
+        else:  # SHORT
+            hit_tp = bool(tp) and mark <= tp
+            hit_sl = bool(sl) and mark >= sl
+        if not (hit_tp or hit_sl):
+            return False
+
+        label  = "TP" if hit_tp else "SL"
+        target = tp if hit_tp else sl
+        _log(
+            f"[Monitor] {label} alcanzado (mark=${mark:,.2f}, objetivo=${target:,.2f}) — "
+            f"cierre a mercado (red de seguridad).",
+            "OK" if hit_tp else "WARN",
+        )
+        try:
+            self.futures.close_position_market(symbol, side, pos["quantity"])
+        except Exception as e:
+            _log(f"[Monitor] Error cerrando posición en {label}: {e}", "WARN")
+            return False
+
+        # Dar tiempo a Binance para registrar el fill y el REALIZED_PNL antes de reconciliar.
+        await asyncio.sleep(1.5)
+        open_trades = self.store.get_open_trades()
+        active = next((t for t in open_trades if t["id"] == self._active_trade_id), None)
+        if active:
+            await self._finalize_close(active, detected_by="tp_sl_monitor")
+        return True
+
     async def run_position_monitor_loop(self):
         """
         Loop ligero cada POSITION_MONITOR segundos (default 3 min).
         Sin agentes — solo consulta Binance para:
           1. Actualizar PnL no realizado de la posición activa
-          2. Detectar liquidaciones (posición desapareció sin SL/TP esperado)
-          3. Emitir funding fee acumulado al trade en DB
+          2. Hacer cumplir TP/SL si las órdenes algo no se dispararon (_enforce_tp_sl)
+          3. Detectar liquidaciones (posición desapareció sin SL/TP esperado)
+          4. Emitir funding fee acumulado al trade en DB
         """
         _log(f"Position monitor iniciado (cada {POSITION_MONITOR}s).", "INFO")
         _funding_ticks = 0   # ticks desde último cobro de funding (cada 8h = 160 ticks a 3min)
@@ -1769,6 +1867,13 @@ class TradingOrchestrator:
                         f"LIQ=${pos['liquidation_price']:,.0f}",
                         "INFO",
                     )
+
+                    # Red de seguridad: cerrar si el precio ya cruzó TP/SL (las órdenes
+                    # algo pueden no haberse colocado en Binance). Si cierra, el siguiente
+                    # bloque/tick ya no encontrará posición.
+                    if await self._enforce_tp_sl(pos):
+                        continue
+
                     await self._check_trailing_stop(pos)
 
                     # Acumular funding fees reales desde Binance cada ~8h
@@ -1811,45 +1916,9 @@ class TradingOrchestrator:
                         )
                         if active:
                             # La posición ya no existe en Binance. Puede ser TP, SL, liquidación
-                            # o cierre manual. Resolver el precio/razón REALES desde el historial
-                            # (NO asumir liquidación: durante la pausa este es el único camino).
-                            balance = self.futures.get_futures_balance()
-                            try:
-                                self.futures.cancel_all_orders(TRADING_UNIVERSE[0])
-                            except Exception:
-                                pass
-                            exit_price, exit_reason = self._resolve_close_from_binance(active)
-                            pnl = self.store.close_trade(
-                                self._active_trade_id, self._cycle,
-                                exit_price, exit_reason,
-                            )
-                            self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
-                            self._active_trade_id = None
-                            self._sl_order_id = None
-                            await broadcast_position_update(None)
-
-                            event_type = "LIQUIDATION" if exit_reason == "LIQUIDATED" else "POSITION_CLOSE"
-                            self.store.log_system_event(
-                                event_type, "FUTURES", balance,
-                                {
-                                    "trade_id":   active["id"],
-                                    "entry_price": active["entry_price"],
-                                    "exit_price": exit_price,
-                                    "exit_reason": exit_reason,
-                                    "side":       active["side"],
-                                    "pnl":        pnl,
-                                    "detected_by": "position_monitor",
-                                },
-                            )
-                            _log(
-                                f"[Monitor] Trade #{active['id']} cerrado: {exit_reason} "
-                                f"@ ${exit_price:,.2f} | PnL={pnl:+.4f} USDT | Balance: ${balance:.2f}",
-                                "ERR" if exit_reason == "LIQUIDATED" else "OK",
-                            )
-                            if exit_reason == "LIQUIDATED":
-                                await broadcast_error(
-                                    f"LIQUIDATION detected: trade #{active['id']} @ ${exit_price:,.0f}"
-                                )
+                            # o cierre manual. _finalize_close resuelve el precio/razón REALES
+                            # desde el historial (NO asume liquidación).
+                            await self._finalize_close(active, detected_by="position_monitor")
             except Exception as e:
                 _log(f"[Monitor] Error: {e}", "WARN")
 

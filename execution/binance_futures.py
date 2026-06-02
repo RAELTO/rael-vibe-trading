@@ -338,6 +338,14 @@ class BinanceFuturesClient:
             pass
         return None
 
+    def get_mark_price(self, symbol: str) -> float:
+        """Mark price actual del símbolo (0.0 si la consulta falla)."""
+        try:
+            data = self.client.futures_mark_price(symbol=symbol)
+            return float(data["markPrice"])
+        except Exception:
+            return 0.0
+
     def get_recent_filled_orders(self, symbol: str, limit: int = 30) -> list[dict]:
         """Órdenes FILLED recientes — para detectar SL/TP ejecutados entre ciclos."""
         try:
