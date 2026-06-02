@@ -7,25 +7,27 @@ Esta guia resume el despliegue realizado para el orquestador/backend en VPS y el
 - Frontend: Vercel, proyecto Vite en `dashboard`.
 - Backend/orquestador: VPS Ubuntu Server 24 LTS.
 - Servicio backend: `systemd` con nombre `vibe-trading.service`.
-- Proxy publico: DatabaseMart Website Management hacia Nginx.
-- API publica: `https://vibe-trading-apilocal.dbm.shared-servers.com`.
-- Dashboard publico: `https://rael-vibe-trading-dashboard.vercel.app`.
+- Proxy publico: Website Management del proveedor hacia Nginx.
+- API publica: `<BACKEND_PUBLIC_URL>`.
+- Dashboard publico: `<FRONTEND_PUBLIC_URL>`.
 
 ## Datos del VPS
 
-- Proveedor: DatabaseMart Linux VPS.
-- Usuario SSH: `administrator`.
-- IP compartida: `93.127.136.195`.
-- Puerto SSH publico: `10071`.
-- Host interno: `192.168.122.49`.
+- Proveedor: `<VPS_PROVIDER>`.
+- Usuario SSH: `<VPS_SSH_USER>`.
+- IP compartida/publica: `<VPS_PUBLIC_IP>`.
+- Puerto SSH publico: `<VPS_SSH_PORT>`.
+- Host interno: `<VPS_INTERNAL_IP>`.
 - Sistema operativo: Ubuntu Server 24 LTS 64-bit.
+
+No guardar IPs, puertos SSH, usuarios ni URLs temporales reales en repositorios publicos. Mantener esos datos en notas privadas o en el panel del proveedor.
 
 ## Entrar al VPS desde Windows despues de reiniciar el PC
 
 Abrir CMD o PowerShell y ejecutar:
 
 ```powershell
-ssh administrator@93.127.136.195 -p 10071
+ssh <VPS_SSH_USER>@<VPS_PUBLIC_IP> -p <VPS_SSH_PORT>
 ```
 
 Luego elevar a root:
@@ -59,7 +61,7 @@ reboot
 Despues del reinicio:
 
 ```bash
-ssh administrator@93.127.136.195 -p 10071
+ssh <VPS_SSH_USER>@<VPS_PUBLIC_IP> -p <VPS_SSH_PORT>
 sudo -i
 ```
 
@@ -103,7 +105,7 @@ TRADING_HOURS_START=8
 TRADING_HOURS_END=20
 TRADING_TIMEZONE=UTC
 NEWS_INTERVAL_SECONDS=10800
-CORS_ORIGINS=https://rael-vibe-trading-dashboard.vercel.app
+CORS_ORIGINS=<FRONTEND_PUBLIC_URL>
 ```
 
 Para guardar en nano:
@@ -255,29 +257,29 @@ curl http://127.0.0.1/health
 ## Firewall
 
 ```bash
-ufw allow 10071/tcp
+ufw allow <VPS_SSH_PORT>/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw enable
 ufw status
 ```
 
-## Website Management en DatabaseMart
+## Website Management en el proveedor
 
-Como la IP es compartida, el puerto 80 publico directo de `93.127.136.195` no apunta necesariamente al VPS. Por eso se uso Website Management.
+Como la IP es compartida, el puerto 80 publico directo de `<VPS_PUBLIC_IP>` puede no apuntar necesariamente al VPS. Por eso se uso Website Management.
 
 Configuracion usada:
 
-- Dominio falso: `vibe-trading-api.local`.
+- Dominio falso: `<BACKEND_FAKE_DOMAIN>`.
 - Temporary URL habilitada.
-- IP interna: `192.168.122.49`.
+- IP interna: `<VPS_INTERNAL_IP>`.
 - Port: `80`.
-- URL temporal resultante: `https://vibe-trading-apilocal.dbm.shared-servers.com`.
+- URL temporal resultante: `<BACKEND_PUBLIC_URL>`.
 
 Prueba publica:
 
 ```txt
-https://vibe-trading-apilocal.dbm.shared-servers.com/health
+<BACKEND_PUBLIC_URL>/health
 ```
 
 ## Frontend en Vercel
@@ -297,8 +299,8 @@ Output Directory: dist
 Variables de entorno:
 
 ```env
-VITE_API_URL=https://vibe-trading-apilocal.dbm.shared-servers.com
-VITE_WS_URL=wss://vibe-trading-apilocal.dbm.shared-servers.com/ws
+VITE_API_URL=<BACKEND_PUBLIC_URL>
+VITE_WS_URL=<BACKEND_PUBLIC_WS_URL>
 ```
 
 Despues de cambiar variables o recibir un nuevo commit, redeploy en Vercel si no lo hace automaticamente.
@@ -308,7 +310,7 @@ Despues de cambiar variables o recibir un nuevo commit, redeploy en Vercel si no
 Desde CMD/PowerShell:
 
 ```powershell
-ssh administrator@93.127.136.195 -p 10071
+ssh <VPS_SSH_USER>@<VPS_PUBLIC_IP> -p <VPS_SSH_PORT>
 ```
 
 En el VPS:
@@ -339,14 +341,14 @@ curl http://127.0.0.1/health
 Backend publico:
 
 ```txt
-https://vibe-trading-apilocal.dbm.shared-servers.com/health
-https://vibe-trading-apilocal.dbm.shared-servers.com/state
+<BACKEND_PUBLIC_URL>/health
+<BACKEND_PUBLIC_URL>/state
 ```
 
 Frontend:
 
 ```txt
-https://rael-vibe-trading-dashboard.vercel.app
+<FRONTEND_PUBLIC_URL>
 ```
 
 ## Horario de trading
@@ -397,7 +399,7 @@ Se ajusto el proyecto para evitar inicializar spot en modo futures.
 
 ## Cancelacion del VPS
 
-En DatabaseMart:
+En el proveedor:
 
 ```txt
 Virtual Servers -> vibe-trading-api -> Overview -> Stop Using -> Request Cancellation
@@ -411,4 +413,3 @@ Reason: Project ends
 ```
 
 No elegir cancelacion inmediata si se quiere mantener el servidor hasta el fin del periodo pagado.
-
