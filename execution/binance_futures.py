@@ -46,7 +46,9 @@ class BinanceFuturesClient:
     def __init__(self):
         api_key    = os.getenv("BINANCE_FUTURES_API_KEY", os.getenv("BINANCE_TESTNET_API_KEY"))
         api_secret = os.getenv("BINANCE_FUTURES_SECRET",  os.getenv("BINANCE_TESTNET_SECRET"))
-        self.client = Client(api_key=api_key, api_secret=api_secret, testnet=True)
+        # python-binance hace ping al endpoint spot durante __init__ por defecto.
+        # En algunos VPS ese endpoint esta bloqueado aunque Futures Testnet funcione.
+        self.client = Client(api_key=api_key, api_secret=api_secret, testnet=True, ping=False)
         self._api_key    = api_key
         self._api_secret = api_secret
         self._leverage_cache: dict[str, int] = {}

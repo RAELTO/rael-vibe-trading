@@ -158,8 +158,6 @@ class TradingOrchestrator:
         self.news_agent    = WebSearchAgent()
         self.decider       = Decider()
         self.risk          = RiskManager()
-        self.spot          = BinanceTestnetClient()
-        self.futures       = BinanceFuturesClient()
         self.store         = StateStore()
         self.epoch         = None
 
@@ -176,6 +174,8 @@ class TradingOrchestrator:
 
         # Modo de trading — FUTURES por defecto, SPOT como secundario
         self.trading_mode: str = os.getenv("TRADING_MODE", "FUTURES").upper()
+        self.spot          = None
+        self.futures       = BinanceFuturesClient() if self.trading_mode == "FUTURES" else None
 
         self._cycle           = 0
         self._decision_log: list[dict] = []
@@ -192,7 +192,13 @@ class TradingOrchestrator:
     @property
     def _client(self):
         """Retorna el cliente activo según el modo de trading."""
-        return self.futures if self.trading_mode == "FUTURES" else self.spot
+        if self.trading_mode == "FUTURES":
+            if self.futures is None:
+                self.futures = BinanceFuturesClient()
+            return self.futures
+        if self.spot is None:
+            self.spot = BinanceTestnetClient()
+        return self.spot
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
