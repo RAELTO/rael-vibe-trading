@@ -174,9 +174,12 @@ export function MarketChart({ symbol = "BTCUSDT", leverage, cols = 4 }: MarketCh
           </div>
         ) : (
           <>
-            {/* Price chart — flex-1 so it grows to fill available space */}
+            {/* Price chart — flex-1 grows on desktop; minHeight + absolute wrapper
+                garantizan altura en móvil (ResponsiveContainer colapsa a 0 dentro de
+                cadenas flex sin altura definida). */}
             {chartData.length > 0 && (
-              <div style={{ flex: 1, minHeight: 120 }}>
+              <div style={{ flex: 1, minHeight: 180, position: "relative" }}>
+                <div style={{ position: "absolute", inset: 0 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
                     <defs>
@@ -212,6 +215,7 @@ export function MarketChart({ symbol = "BTCUSDT", leverage, cols = 4 }: MarketCh
                     />
                   </AreaChart>
                 </ResponsiveContainer>
+                </div>
               </div>
             )}
 
