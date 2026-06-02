@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
+const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
 interface MarketData {
   symbol: string;
   price: number;
@@ -57,7 +59,7 @@ function IndicatorCell({ label, value, color, dim }: IndicatorCellProps) {
 }
 
 async function fetchMarket(symbol: string): Promise<MarketData | null> {
-  const res = await fetch(`/api/market/${symbol}`);
+  const res = await fetch(`${API}/market/${symbol}`);
   if (!res.ok) return null;
   const data = await res.json();
   if (data.error) return null;
