@@ -211,6 +211,32 @@ def init_db():
                 balance_at   REAL    NOT NULL,
                 prev_balance REAL
             );
+
+            -- Lecciones de post-mortem por trade cerrado (bucle de aprendizaje con Claude)
+            CREATE TABLE IF NOT EXISTS trade_lessons (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           TEXT    NOT NULL,
+                trade_id     INTEGER NOT NULL,
+                side         TEXT    NOT NULL,
+                exit_reason  TEXT,
+                pnl          REAL,
+                outcome      TEXT,                 -- WIN | LOSS
+                tag          TEXT,                 -- etiqueta corta del patrón
+                lesson       TEXT                  -- lección accionable (1-2 oraciones)
+            );
+
+            -- Revisiones estratégicas diarias generadas por Claude
+            CREATE TABLE IF NOT EXISTS strategy_reviews (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           TEXT    NOT NULL,
+                review_date  TEXT    NOT NULL,      -- YYYY-MM-DD (UTC)
+                grade        TEXT,                  -- A-F o etiqueta de salud
+                win_rate     REAL,
+                total_trades INTEGER,
+                net_pnl      REAL,
+                summary      TEXT,                  -- 2-4 oraciones
+                adjustments  TEXT                   -- JSON list de ajustes sugeridos
+            );
         """)
         _migrate(con)
 
@@ -674,6 +700,89 @@ class StateStore:
             desc = detail.get("reason", detail.get("postmortem", ""))[:80]
             lines.append(f"  [{r['ts'][:10]}] {r['event_type']} ({r['mode']}) @ ${r['balance_at']:.0f}: {desc}")
         return "System events (recent):\n" + "\n".join(lines)
+
+    # ── Trade lessons (learning loop) ─────────────────────────────────────────
+
+    def save_trade_lesson(
+        self, trade_id: int, side: str, exit_reason: str, pnl: float,
+        outcome: str, tag: str, lesson: str,
+    ):
+        with _conn() as con:
+            con.execute(
+                """INSERT INTO trade_lessons
+                   (ts, trade_id, side, exit_reason, pnl, outcome, tag, lesson)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    trade_id, side, exit_reason, pnl, outcome, tag, lesson,
+                ),
+            )
+
+    def get_recent_lessons(self, limit: int = 8) -> list[dict]:
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM trade_lessons ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_lessons_summary(self, limit: int = 8) -> str:
+        """Resumen de lecciones recientes para inyectar en el prompt del decisor."""
+        rows = self.get_recent_lessons(limit)
+        if not rows:
+            return ""
+        lines = [
+            f"  - [{r['outcome']} {r['pnl']:+.2f} | {r['tag'] or r['exit_reason'] or '?'}] {r['lesson']}"
+            for r in rows if r.get("lesson")
+        ]
+        return "\n".join(lines)
+
+    # ── Strategy reviews (daily) ──────────────────────────────────────────────
+
+    def save_strategy_review(
+        self, review_date: str, grade: str, win_rate: float,
+        total_trades: int, net_pnl: float, summary: str, adjustments: list,
+    ):
+        with _conn() as con:
+            con.execute(
+                """INSERT INTO strategy_reviews
+                   (ts, review_date, grade, win_rate, total_trades, net_pnl, summary, adjustments)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    review_date, grade, win_rate, total_trades, net_pnl,
+                    summary, json.dumps(adjustments or []),
+                ),
+            )
+
+    def has_review_for_date(self, review_date: str) -> bool:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT 1 FROM strategy_reviews WHERE review_date = ? LIMIT 1",
+                (review_date,),
+            ).fetchone()
+        return row is not None
+
+    def _review_row_to_dict(self, r) -> dict:
+        d = dict(r)
+        try:
+            d["adjustments"] = json.loads(d.get("adjustments") or "[]")
+        except Exception:
+            d["adjustments"] = []
+        return d
+
+    def get_latest_review(self) -> dict | None:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT * FROM strategy_reviews ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return self._review_row_to_dict(row) if row else None
+
+    def get_recent_reviews(self, limit: int = 7) -> list[dict]:
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM strategy_reviews ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._review_row_to_dict(r) for r in rows]
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 

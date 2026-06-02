@@ -69,6 +69,28 @@ export interface NewsContext {
   message?: string;
 }
 
+export interface StrategyReview {
+  review_date: string;
+  grade: string;          // A-F
+  win_rate: number;
+  total_trades: number;
+  net_pnl: number;
+  summary: string;
+  adjustments: string[];
+  ts: string;
+}
+
+export interface TradeLesson {
+  trade_id: number;
+  side: string;
+  outcome: string;        // WIN | LOSS
+  pnl: number;
+  exit_reason: string;
+  tag: string;
+  lesson: string;
+  ts: string;
+}
+
 export interface RuntimeConfig {
   analysis_interval_seconds: number;
   trading_hours_enabled: boolean;
@@ -90,6 +112,8 @@ export interface AppState {
   trading_mode: "FUTURES" | "SPOT";
   active_position: ActivePosition | null;
   hard_stop_message: string | null;
+  strategy_review?: StrategyReview | null;
+  lessons?: TradeLesson[];
   config?: RuntimeConfig;
 }
 

@@ -219,6 +219,9 @@ Portfolio and memory:
 - System events: {context.get('system_events', 'none')}
 {fmt_active_position(context)}
 
+Lessons learned from past trades (real post-mortems of YOUR OWN closed trades — weigh them when a similar setup appears):
+{context.get('lessons') or '  (none yet)'}
+
 Decision rules:
 - BUY when the long setup has a reasonable directional lean (confluence among trend/EMA alignment,
   MACD, RSI) and room to TP before major resistance. You do NOT need a textbook-perfect edge —

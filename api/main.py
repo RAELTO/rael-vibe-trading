@@ -60,6 +60,8 @@ app_state: dict = {
     "market_data":    {},
     "active_position":  None,        # posición futures activa
     "hard_stop_message": None,       # mensaje de hard stop si se alcanzó el límite
+    "strategy_review":  None,        # última revisión estratégica diaria (Claude advisor)
+    "lessons":          [],          # lecciones de post-mortem recientes (Claude advisor)
     "config":         {              # configuración runtime (la setea el orquestador al arrancar)
         "analysis_interval_seconds": 900,
         "trading_hours_enabled":     False,
@@ -327,3 +329,13 @@ async def broadcast_mode_change(mode: str):
 async def broadcast_hard_stop(message: str):
     app_state["hard_stop_message"] = message
     await manager.broadcast("hard_stop", {"message": message, "ts": datetime.now(timezone.utc).isoformat()})
+
+
+async def broadcast_strategy_review(review: dict):
+    app_state["strategy_review"] = review
+    await manager.broadcast("strategy_review", review)
+
+
+async def broadcast_lesson(lesson: dict):
+    app_state["lessons"] = [lesson] + app_state["lessons"][:19]  # últimas 20
+    await manager.broadcast("trade_lesson", lesson)

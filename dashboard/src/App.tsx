@@ -7,6 +7,7 @@ import { PositionPanel } from "./components/PositionPanel";
 import { AgentVotesPanel } from "./components/AgentVotesPanel";
 import { DecisionPanel } from "./components/DecisionPanel";
 import { NewsPanel } from "./components/NewsPanel";
+import { StrategyPanel } from "./components/StrategyPanel";
 import { MarketChart } from "./components/MarketChart";
 import { PnLChart } from "./components/PnLChart";
 import { ErrorLog } from "./components/ErrorLog";
@@ -81,6 +82,7 @@ function DesktopMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>
       </div>
       <PnLChart />
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={3} />
+      <StrategyPanel review={state.strategy_review} lessons={state.lessons} />
       {state.errors.length > 0 && <ErrorLog errors={state.errors} />}
     </ScrollMain>
   );
@@ -94,6 +96,7 @@ function TabletMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>[
       <MarketChart symbol={symbol} leverage={state.active_position?.leverage} cols={2} />
       <PnLChart />
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={1} />
+      <StrategyPanel review={state.strategy_review} lessons={state.lessons} />
       {state.errors.length > 0 && <ErrorLog errors={state.errors} />}
     </ScrollMain>
   );
@@ -141,6 +144,7 @@ function MobileContent({ tab, state, symbol }: {
   if (tab === "pipeline") return (
     <MobileScrollArea>
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={1} />
+      <StrategyPanel review={state.strategy_review} lessons={state.lessons} />
       {state.errors.length > 0 && <ErrorLog errors={state.errors} />}
     </MobileScrollArea>
   );

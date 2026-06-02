@@ -44,6 +44,7 @@ from agents.synthesis_agent import SynthesisAgent
 from agents.gate_agent      import GateAgent
 from agents.deepseek_decision_agent import DeepSeekDecisionAgent
 from agents.claude_audit_agent import ClaudeAuditAgent
+from agents.claude_advisor_agent import ClaudeAdvisorAgent
 
 from core.decider       import Decider
 from core.risk_manager  import RiskManager, OrderRequest
@@ -67,6 +68,8 @@ from api.main import (
     broadcast_position_update,
     broadcast_mode_change,
     broadcast_hard_stop,
+    broadcast_strategy_review,
+    broadcast_lesson,
 )
 
 # ─── constantes ───────────────────────────────────────────────────────────────
@@ -89,6 +92,7 @@ DECISION_TIMEOUT   = int(os.getenv("DEEPSEEK_DECISION_TIMEOUT_SECONDS", "45"))
 CLAUDE_AUDIT_ENABLED = os.getenv("CLAUDE_AUDIT_ENABLED", "true").lower() == "true"
 CLAUDE_AUDIT_MIN_CONF = float(os.getenv("CLAUDE_AUDIT_MIN_CONF", "0.58"))
 CLAUDE_AUDIT_MAX_CONF = float(os.getenv("CLAUDE_AUDIT_MAX_CONF", "0.66"))
+CLAUDE_ADVISOR_ENABLED = os.getenv("CLAUDE_ADVISOR_ENABLED", "true").lower() == "true"
 
 # Horario de trading — limita SOLO el loop de decisiones (el monitor de posiciones sigue 24/7).
 # Ventana [START, END) en la zona TRADING_TIMEZONE. Si START > END, la ventana cruza medianoche.
@@ -170,6 +174,8 @@ class TradingOrchestrator:
         self._pipeline_ready = False
         self._decision_agent: DeepSeekDecisionAgent | None = None
         self._audit_agent: ClaudeAuditAgent | None = None
+        self._advisor_agent: ClaudeAdvisorAgent | None = None
+        self._last_review_date: str | None = None
         self._single_decision_ready = False
 
         # Modo de trading — FUTURES por defecto, SPOT como secundario
@@ -217,6 +223,9 @@ class TradingOrchestrator:
             if CLAUDE_AUDIT_ENABLED:
                 self._audit_agent = ClaudeAuditAgent()
                 _log(f"  auditor/{self._audit_agent.model} -> lazy", "INFO")
+            if CLAUDE_ADVISOR_ENABLED:
+                self._advisor_agent = ClaudeAdvisorAgent()
+                _log(f"  advisor/{self._advisor_agent.model} -> lazy (post-mortem + review)", "INFO")
             candidates = []
         elif DECISION_MODE == "ENSEMBLE":
             candidates = [
@@ -285,6 +294,12 @@ class TradingOrchestrator:
             "trading_hours_end":         TRADING_HOURS_END,
             "trading_timezone":          TRADING_TIMEZONE,
         }
+        # Cargar insights persistidos (review + lecciones) para el evento init del dashboard
+        try:
+            app_state["strategy_review"] = self.store.get_latest_review()
+            app_state["lessons"] = self.store.get_recent_lessons(limit=20)
+        except Exception as e:
+            _log(f"[Startup] No se pudieron cargar insights previos: {e}", "WARN")
         _log(f"Modo de trading: {self.trading_mode}", "OK")
         try:
             if self.trading_mode == "FUTURES":
@@ -318,6 +333,9 @@ class TradingOrchestrator:
         # (detecta cierres offline: SL/TP disparado, liquidación, cierre manual)
         if self.trading_mode == "FUTURES":
             await self._reconcile_open_trades()
+            # Adoptar posiciones vivas en Binance sin registro en DB (p.ej. DB perdida
+            # en un redeploy mientras una posición seguía abierta).
+            await self._adopt_orphan_positions()
         else:
             # SPOT: restauración simple sin reconciliación
             try:
@@ -476,6 +494,84 @@ class TradingOrchestrator:
                         "exit_reason": exit_reason,
                         "exit_price": exit_price,
                         "pnl":        pnl,
+                    },
+                )
+            except Exception:
+                pass
+
+    async def _adopt_orphan_positions(self):
+        """
+        Adopta una posición ABIERTA en Binance que no tiene trade OPEN correspondiente
+        en la DB (huérfana). Ocurre si la DB se perdió/reseteó en un redeploy mientras
+        una posición seguía viva: sin esto, el orquestador quedaría ciego ante ella y
+        nunca la cerraría (ni por TP/SL ni por liquidación detectada).
+
+        Reconstruye SL/TP desde el precio de entrada real y crea el registro en DB para
+        que el PositionMonitor (incl. _enforce_tp_sl) la gestione normalmente.
+        """
+        if self.trading_mode != "FUTURES" or self._active_trade_id:
+            return
+
+        for symbol in TRADING_UNIVERSE:
+            try:
+                pos = self.futures.get_position(symbol)
+            except Exception as e:
+                _log(f"[Adopt] Error consultando {symbol}: {e}", "WARN")
+                continue
+            if not pos:
+                continue
+
+            # ¿Ya hay un trade OPEN para este símbolo? Entonces no es huérfana.
+            open_trades = self.store.get_open_trades()
+            if any(t["symbol"] == symbol and t["status"] == "OPEN" for t in open_trades):
+                continue
+
+            side  = pos["side"]
+            entry = pos["entry_price"]
+            qty   = pos["quantity"]
+            sl     = self.futures.calculate_sl(side, entry)
+            tp     = self.futures.calculate_tp(side, entry)
+            liq    = pos.get("liquidation_price") or self.futures.calculate_liquidation_price(side, entry, FUTURES_LEVERAGE)
+            margin = self.futures.calculate_margin(entry, qty, FUTURES_LEVERAGE)
+
+            _log(
+                f"[Adopt] Posición HUÉRFANA detectada en Binance sin registro en DB — "
+                f"{side} {qty} {symbol} @ ${entry:,.2f}. Adoptando bajo gestión "
+                f"(SL=${sl:,.2f} TP=${tp:,.2f}).",
+                "WARN",
+            )
+
+            # Recolocar SL/TP (best-effort; _enforce_tp_sl es la red de seguridad).
+            try:
+                sl_result = self.futures.place_stop_loss(symbol, side, sl)
+                self._sl_order_id = sl_result.get("order_id")
+                self.futures.place_take_profit(symbol, side, tp)
+            except Exception as e:
+                _log(f"[Adopt] SL/TP placement error: {e}", "WARN")
+
+            trade_id = self.store.open_trade(
+                cycle=self._cycle, symbol=symbol, side=side,
+                entry_price=entry, quantity=qty,
+                sl_price=sl, tp_price=tp, signals=[],
+                mode="FUTURES", leverage=FUTURES_LEVERAGE,
+                liquidation_price=liq, margin_used=margin,
+                sl_order_id=self._sl_order_id,
+            )
+            self._active_trade_id = trade_id
+            self.risk.open_position()
+
+            await broadcast_order(symbol, side, qty, entry, sl, tp)
+            await broadcast_position_update(pos)
+            try:
+                self.store.log_system_event(
+                    "ORPHAN_ADOPTED", "FUTURES", self._compute_effective_balance(),
+                    {
+                        "trade_id":    trade_id,
+                        "symbol":      symbol,
+                        "side":        side,
+                        "entry_price": entry,
+                        "sl_price":    sl,
+                        "tp_price":    tp,
                     },
                 )
             except Exception:
@@ -1124,6 +1220,13 @@ class TradingOrchestrator:
         except Exception as e:
             _log(f"[Context] Eventos de sistema no disponibles: {e}", "WARN")
 
+        # Lecciones acumuladas de post-mortems (bucle de aprendizaje con Claude)
+        lessons_str = ""
+        try:
+            lessons_str = self.store.get_lessons_summary(limit=8)
+        except Exception as e:
+            _log(f"[Context] Lecciones no disponibles: {e}", "WARN")
+
         ctx: dict = {
             "news_sentiment":       news_ctx.get("overall_sentiment", 0.0),
             "news_impact":          news_ctx.get("market_impact", "LOW"),
@@ -1145,6 +1248,7 @@ class TradingOrchestrator:
             "phase1_history":       phase1_history_str,
             "agent_performance":    agent_perf_str,
             "system_events":        system_events_str,
+            "lessons":              lessons_str,
             "portfolio_balance":    f"{balance:.2f}",
             "open_positions":       self.risk.state.open_positions,
             "daily_pnl":            f"{-self.risk.state.daily_loss:+.2f}{pnl_context}",
@@ -1529,6 +1633,21 @@ class TradingOrchestrator:
         self.store.save_portfolio(self._cycle, binance_balance, budget_pnl, budget_pnl_pct)
         await broadcast_portfolio(binance_balance, effective_budget, budget_pnl, budget_pnl_pct)
 
+    async def _broadcast_live_balance(self):
+        """
+        Difunde el balance real de Binance + PnL del budget SIN guardar snapshot en DB.
+        Lo usan el refresco idle y el PositionMonitor para mantener el 'BINANCE ACCOUNT'
+        del dashboard sincronizado entre ciclos (24/7), incluso sin posición activa.
+        """
+        balance = (
+            self.futures.get_futures_balance()
+            if self.trading_mode == "FUTURES"
+            else self.spot.get_portfolio_value()
+        )
+        budget_pnl = round(self.store.get_total_pnl(), 4)
+        budget_pnl_pct = round(budget_pnl / TRADING_BUDGET * 100, 4) if TRADING_BUDGET > 0 else 0.0
+        await broadcast_portfolio(balance, self._effective_budget(), budget_pnl, budget_pnl_pct)
+
     async def _refresh_idle_dashboard(self):
         """
         Refresco ligero del dashboard mientras el decisor está pausado (fuera de horario).
@@ -1782,6 +1901,106 @@ class TradingOrchestrator:
                 f"LIQUIDATION detected: trade #{active['id']} @ ${exit_price:,.0f}"
             )
 
+        # Bucle de aprendizaje: post-mortem en segundo plano (no bloquea el monitor).
+        if self._advisor_agent and CLAUDE_ADVISOR_ENABLED:
+            asyncio.create_task(self._run_post_mortem(active, exit_price, exit_reason, pnl))
+
+    async def _run_post_mortem(self, trade: dict, exit_price: float, exit_reason: str, pnl: float):
+        """Pide a Claude una lección del trade cerrado, la guarda y la difunde al dashboard."""
+        try:
+            result = await asyncio.wait_for(
+                self._advisor_agent.post_mortem(trade, exit_price, exit_reason, pnl),
+                timeout=SYNTHESIS_TIMEOUT,
+            )
+        except Exception as e:
+            _log(f"[Advisor] Post-mortem falló (trade #{trade.get('id')}): {e}", "WARN")
+            return
+
+        outcome = "WIN" if pnl > 0 else "LOSS"
+        tag    = str(result.get("tag", "")).strip()
+        lesson = str(result.get("lesson", "")).strip()
+        if not lesson:
+            return
+        self.store.save_trade_lesson(
+            trade_id=trade["id"], side=trade["side"], exit_reason=exit_reason,
+            pnl=round(pnl, 4), outcome=outcome, tag=tag, lesson=lesson,
+        )
+        await broadcast_lesson({
+            "trade_id":    trade["id"],
+            "side":        trade["side"],
+            "outcome":     outcome,
+            "pnl":         round(pnl, 4),
+            "exit_reason": exit_reason,
+            "tag":         tag,
+            "lesson":      lesson,
+            "ts":          datetime.now(timezone.utc).isoformat(),
+        })
+        _log(f"[Advisor] Lección #{trade['id']} [{outcome} {tag}]: {lesson[:90]}", "OK")
+
+    async def _maybe_daily_review(self):
+        """
+        Genera una revisión estratégica diaria (una por día UTC) si el advisor está activo.
+        Se invoca desde el PositionMonitor (24/7), así que corre aunque el decisor esté pausado.
+        """
+        if not (self._advisor_agent and CLAUDE_ADVISOR_ENABLED):
+            return
+        today = datetime.now(timezone.utc).date().isoformat()
+        if self._last_review_date == today:
+            return
+        if self.store.has_review_for_date(today):
+            self._last_review_date = today
+            return
+
+        stats = self.store.get_trade_stats()
+        if stats.get("total", 0) <= 0:
+            # Sin trades cerrados aún: nada que revisar. Marcar para no reintentar todo el día.
+            self._last_review_date = today
+            return
+
+        recent_trades = [
+            t for t in self.store.get_recent_trades(limit=10) if t.get("status") == "CLOSED"
+        ]
+        recent_decisions = "Sin historial"
+        try:
+            db_decisions = self.store.get_recent_decisions(limit=8)
+            recent_decisions = " | ".join(
+                f"{d['decision']}({d['score']:.2f})" for d in db_decisions
+            ) or "Sin historial"
+        except Exception:
+            pass
+        lessons = self.store.get_lessons_summary(limit=8)
+
+        try:
+            review = await asyncio.wait_for(
+                self._advisor_agent.daily_review(today, stats, recent_trades, recent_decisions, lessons),
+                timeout=SYNTHESIS_TIMEOUT,
+            )
+        except Exception as e:
+            _log(f"[Advisor] Review diaria falló: {e}", "WARN")
+            return
+
+        grade       = str(review.get("grade", "")).strip()
+        summary     = str(review.get("summary", "")).strip()
+        adjustments = review.get("adjustments", []) or []
+        net_pnl     = round(self.store.get_total_pnl(), 4)
+        self.store.save_strategy_review(
+            review_date=today, grade=grade, win_rate=stats.get("win_rate", 0.0),
+            total_trades=stats.get("total", 0), net_pnl=net_pnl,
+            summary=summary, adjustments=adjustments,
+        )
+        self._last_review_date = today
+        await broadcast_strategy_review({
+            "review_date":  today,
+            "grade":        grade,
+            "win_rate":     stats.get("win_rate", 0.0),
+            "total_trades": stats.get("total", 0),
+            "net_pnl":      net_pnl,
+            "summary":      summary,
+            "adjustments":  adjustments,
+            "ts":           datetime.now(timezone.utc).isoformat(),
+        })
+        _log(f"[Advisor] Review diaria {today} [{grade}]: {summary[:90]}", "OK")
+
     async def _enforce_tp_sl(self, pos: dict) -> bool:
         """
         Red de seguridad: si el mark price ya cruzó el TP o el SL, cierra la posición a
@@ -1845,6 +2064,19 @@ class TradingOrchestrator:
         while True:
             await asyncio.sleep(POSITION_MONITOR)
             _funding_ticks += 1
+
+            # Refrescar el balance real de Binance en cada tick (24/7), haya o no
+            # posición activa — mantiene 'BINANCE ACCOUNT' sincronizado entre ciclos.
+            try:
+                await self._broadcast_live_balance()
+            except Exception as e:
+                _log(f"[Monitor] Error refrescando balance: {e}", "WARN")
+
+            # Revisión estratégica diaria (una por día UTC, 24/7).
+            try:
+                await self._maybe_daily_review()
+            except Exception as e:
+                _log(f"[Monitor] Error en review diaria: {e}", "WARN")
 
             if self.trading_mode != "FUTURES" or not self._active_trade_id:
                 continue

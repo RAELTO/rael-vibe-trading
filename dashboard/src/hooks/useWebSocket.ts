@@ -17,6 +17,8 @@ function loadPersistedState(): Partial<AppState> {
       last_news:     parsed.last_news     ?? null,
       portfolio:     parsed.portfolio     ?? { balance: 0, binance_balance: 0, trading_budget: 1000, pnl: 0, pnl_pct: 0, budget_pnl: 0, budget_pnl_pct: 0 },
       agent_votes:   parsed.agent_votes   ?? [],
+      strategy_review: parsed.strategy_review ?? null,
+      lessons:         parsed.lessons         ?? [],
     };
   } catch {
     return {};
@@ -36,6 +38,8 @@ const initialState: AppState = {
   trading_mode: "FUTURES",
   active_position: null,
   hard_stop_message: null,
+  strategy_review: null,
+  lessons: [],
   config: {
     analysis_interval_seconds: 900,
     trading_hours_enabled: false,
@@ -53,6 +57,8 @@ function persistState(s: AppState) {
       last_news:     s.last_news,
       portfolio:     s.portfolio,
       agent_votes:   s.agent_votes.slice(0, 20),
+      strategy_review: s.strategy_review ?? null,
+      lessons:         (s.lessons ?? []).slice(0, 20),
     }));
   } catch { /* storage full — ignore */ }
 }
@@ -107,6 +113,12 @@ export function useWebSocket() {
         case "error": {
           const e = msg.data as AppState["errors"][number];
           next = { ...prev, errors: [e, ...prev.errors].slice(0, 10) }; break;
+        }
+        case "strategy_review":
+          next = { ...prev, strategy_review: msg.data as AppState["strategy_review"] }; break;
+        case "trade_lesson": {
+          const l = msg.data as NonNullable<AppState["lessons"]>[number];
+          next = { ...prev, lessons: [l, ...(prev.lessons ?? [])].slice(0, 20) }; break;
         }
         default:
           next = prev; break;
