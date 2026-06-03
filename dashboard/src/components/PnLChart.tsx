@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine, Cell, BarChart, Bar,
+  ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { Panel } from "./Panel";
 
@@ -14,10 +14,18 @@ interface PnLPoint {
   side: string;
   entry_price: number;
   exit_price: number;
+  quantity: number;
+  leverage: number;
+  notional: number;
   pnl: number;
   cumulative_pnl: number;
   exit_reason: string;
   mode: "FUTURES" | "SPOT";
+}
+
+function fmtSize(v: number | null | undefined): string {
+  if (!v) return "—";
+  return v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 function fmtPrice(v: number | null | undefined): string {
@@ -117,6 +125,7 @@ function TradesTable({ points }: { points: PnLPoint[] }) {
               <th className="text-left font-medium py-1 pr-2"  style={stickyTh}>Side</th>
               <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Entry</th>
               <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Exit</th>
+              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Size</th>
               <th className="text-center font-medium py-1 pr-2" style={stickyTh}>Reason</th>
               <th className="text-right font-medium py-1"      style={stickyTh}>PnL</th>
             </tr>
@@ -124,7 +133,7 @@ function TradesTable({ points }: { points: PnLPoint[] }) {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-4 text-center text-[11px]" style={{ color: "#44445a" }}>
+                <td colSpan={7} className="py-4 text-center text-[11px]" style={{ color: "#44445a" }}>
                   No trades in selected range
                 </td>
               </tr>
@@ -137,6 +146,7 @@ function TradesTable({ points }: { points: PnLPoint[] }) {
                   <td className="py-1.5 pr-2" style={{ color: sideColor, fontWeight: 700 }}>{t.side}</td>
                   <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: "#c8c8d8" }}>{fmtPrice(t.entry_price)}</td>
                   <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: "#c8c8d8" }}>{fmtPrice(t.exit_price)}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: "#8888aa", whiteSpace: "nowrap" }}>{fmtSize(t.notional)}</td>
                   <td className="py-1.5 pr-2 text-center" style={{ color: "#8888aa" }}>{reasonLabel(t.exit_reason)}</td>
                   <td className="py-1.5 text-right tabular-nums font-semibold" style={{ color: win ? "#22d27a" : "#f05060" }}>
                     {win ? "+" : ""}{t.pnl.toFixed(2)}
@@ -256,35 +266,6 @@ export function PnLChart() {
                     activeDot={{ r: 3, fill: cumulColor }}
                   />
                 </AreaChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Per-trade bars */}
-            <div>
-              <p className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "#44445a" }}>
-                Per Trade
-                <span className="ml-2 font-mono" style={{ color: "#00d4ff" }}>■ Futures</span>
-                <span className="ml-1.5 font-mono" style={{ color: "#44445a" }}>■ Spot</span>
-              </p>
-              <ResponsiveContainer width="100%" height={80}>
-                <BarChart data={points} margin={{ top: 2, right: 4, left: 0, bottom: 0 }}>
-                  <XAxis dataKey="id" hide />
-                  <YAxis hide domain={["auto", "auto"]} />
-                  <ReferenceLine y={0} stroke="rgba(255,255,255,0.1)" />
-                  <Tooltip content={<PnLTooltip />} />
-                  <Bar dataKey="pnl" radius={[2, 2, 0, 0]}>
-                    {points.map((p, i) => (
-                      <Cell
-                        key={i}
-                        fill={
-                          p.pnl >= 0
-                            ? p.mode === "FUTURES" ? "#00d4ff" : "#22d27a"
-                            : p.mode === "FUTURES" ? "#f05060" : "#7f1d1d"
-                        }
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
               </ResponsiveContainer>
             </div>
 

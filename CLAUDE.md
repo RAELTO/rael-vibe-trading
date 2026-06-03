@@ -61,13 +61,13 @@ Responder ÚNICAMENTE con JSON válido:
 
 ## Reglas de riesgo (futures — siempre las aplica el código)
 
-- HOLD si `confidence < MIN_CONVICTION` (0.60).
-- HOLD si la pérdida diaria alcanza el 3% del balance.
+- HOLD si `confidence < MIN_CONVICTION` (0.58).
+- Límite de pérdida diaria: configurable vía `FUTURES_MAX_DAILY_LOSS_PCT` (**0 = desactivado**, valor actual — solo aplica el hard stop acumulado).
 - **Máximo 1 posición de futures abierta a la vez.**
-- Tamaño de posición: escala de `MIN_POSITION_USDT` ($500) a `MAX_POSITION_USDT` ($1000) según convicción.
+- Tamaño de posición: escala de `MIN_POSITION_USDT` ($450) a `MAX_POSITION_USDT` ($600) según convicción. El margen requerido (`notional/leverage`) debe caber en `MAX_POSITION_SIZE_PERCENT` del budget (25% → cap $250).
 - Stop-loss: **−1.5%** | Take-profit: **+2.5%** | Leverage: **3x**.
 - La liquidación debe quedar al menos 2× más lejos que el SL, o se bloquea.
-- **Hard stop**: si la pérdida acumulada alcanza `MAX_TRADING_LOSS_USDT` ($600), se suspende el trading.
+- **Hard stop**: si la pérdida acumulada alcanza `MAX_TRADING_LOSS_USDT` ($700 = 70% del budget), se suspende el trading. Se reactiva solo cuando se detecta un reset manual del balance del testnet (~$5.000).
 
 ## Horario de trading
 
@@ -83,10 +83,12 @@ El decisor solo abre posiciones nuevas dentro de la ventana `[TRADING_HOURS_STAR
 | `TRADING_MODE` | `FUTURES` | `FUTURES` o `SPOT` |
 | `ANALYSIS_INTERVAL_SECONDS` | `900` | 15 min entre ciclos de decisión |
 | `NEWS_INTERVAL_SECONDS` | `10800` | 3 h entre búsquedas de noticias |
-| `MIN_CONVICTION` | `0.60` | Convicción mínima para ejecutar |
+| `MIN_CONVICTION` | `0.58` | Convicción mínima para ejecutar |
 | `FUTURES_LEVERAGE` | `3` | Apalancamiento |
-| `MIN_POSITION_USDT` / `MAX_POSITION_USDT` | `500` / `1000` | Rango de nocional por posición |
-| `MAX_TRADING_LOSS_USDT` | `600` | Pérdida acumulada → hard stop |
+| `MIN_POSITION_USDT` / `MAX_POSITION_USDT` | `450` / `600` | Rango de nocional por posición |
+| `MAX_POSITION_SIZE_PERCENT` | `25.0` | Cap de margen por posición (% del budget) |
+| `FUTURES_MAX_DAILY_LOSS_PCT` | `0` | Límite de pérdida diaria futures (0 = desactivado) |
+| `MAX_TRADING_LOSS_USDT` | `700` | Pérdida acumulada → hard stop (70% del budget) |
 | `TRADING_HOURS_ENABLED` | `true` | Activa el horario de trading |
 | `TRADING_HOURS_START` / `_END` | `8` / `20` | Ventana activa (hora) |
 | `TRADING_TIMEZONE` | `UTC` | Zona de la ventana (ej: `America/Bogota`) |

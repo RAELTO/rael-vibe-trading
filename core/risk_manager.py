@@ -33,6 +33,8 @@ class RiskManager:
     def __init__(self):
         self.max_position_pct  = float(os.getenv("MAX_POSITION_SIZE_PERCENT", "2.0")) / 100
         self.max_daily_loss_pct = float(os.getenv("MAX_DAILY_LOSS_PERCENT", "5.0")) / 100
+        # Límite de pérdida diaria en futures. 0 = desactivado (solo aplica el hard stop acumulado).
+        self.futures_daily_loss_pct = float(os.getenv("FUTURES_MAX_DAILY_LOSS_PCT", "0")) / 100
         self.min_consensus     = float(os.getenv("MIN_CONSENSUS_SCORE", "0.65"))
         self.demo_budget       = float(os.getenv("TRADING_BUDGET_USDT", "1000.0"))  # presupuesto operativo
         self.max_open_positions = 3
@@ -136,10 +138,12 @@ class RiskManager:
         if order.confidence < self.min_consensus:
             return False, f"Confidence {order.confidence:.2f} below minimum {self.min_consensus:.2f}"
 
-        # Pérdida diaria máxima (3% en futures)
-        futures_loss_limit = balance * 0.03
-        if self.state.daily_loss >= futures_loss_limit:
-            return False, f"Futures daily loss limit reached: ${self.state.daily_loss:.2f} >= ${futures_loss_limit:.2f}"
+        # Pérdida diaria máxima (configurable; FUTURES_MAX_DAILY_LOSS_PCT=0 la desactiva).
+        # Desactivada → la única red sobre pérdidas es el hard stop acumulado (MAX_TRADING_LOSS_USDT).
+        if self.futures_daily_loss_pct > 0:
+            futures_loss_limit = balance * self.futures_daily_loss_pct
+            if self.state.daily_loss >= futures_loss_limit:
+                return False, f"Futures daily loss limit reached: ${self.state.daily_loss:.2f} >= ${futures_loss_limit:.2f}"
 
         # Solo 1 posición abierta en futures
         if self.state.open_positions >= 1:

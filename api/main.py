@@ -183,7 +183,7 @@ def get_pnl_history(limit: int = 50):
         con = sqlite3.connect(db_path)
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            """SELECT id, symbol, side, entry_price, exit_price, pnl,
+            """SELECT id, symbol, side, entry_price, exit_price, quantity, leverage, pnl,
                       exit_reason, ts_close, mode
                FROM trades WHERE status='CLOSED'
                ORDER BY id DESC LIMIT ?""",
@@ -198,6 +198,9 @@ def get_pnl_history(limit: int = 50):
                 "side":        r["side"],
                 "entry_price": r["entry_price"],
                 "exit_price":  r["exit_price"],
+                "quantity":    r["quantity"],
+                "leverage":    r["leverage"],
+                "notional":    round((r["quantity"] or 0) * (r["entry_price"] or 0), 2),
                 "pnl":         r["pnl"],
                 "exit_reason": r["exit_reason"],
                 "mode":        r["mode"] or "FUTURES",
