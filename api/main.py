@@ -196,6 +196,8 @@ def get_pnl_history(limit: int = 50):
                 "ts":          r["ts_close"],
                 "symbol":      r["symbol"],
                 "side":        r["side"],
+                "entry_price": r["entry_price"],
+                "exit_price":  r["exit_price"],
                 "pnl":         r["pnl"],
                 "exit_reason": r["exit_reason"],
                 "mode":        r["mode"] or "FUTURES",

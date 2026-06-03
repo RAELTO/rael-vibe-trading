@@ -12,11 +12,152 @@ interface PnLPoint {
   ts: string;
   symbol: string;
   side: string;
+  entry_price: number;
+  exit_price: number;
   pnl: number;
   cumulative_pnl: number;
   exit_reason: string;
   mode: "FUTURES" | "SPOT";
 }
+
+function fmtPrice(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return v.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+function fmtTime(ts: string): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function reasonLabel(reason: string): string {
+  const r = (reason || "").toUpperCase();
+  if (r.includes("TAKE_PROFIT") || r === "TP") return "TP";
+  if (r.includes("STOP_LOSS") || r === "SL") return "SL";
+  if (r.includes("LIQUIDAT")) return "LIQ";
+  if (r.includes("TRAIL")) return "TRAIL";
+  return reason || "—";
+}
+
+// "YYYY-MM-DD" → ms at local start-of-day (matches the locale times shown in the table).
+function dayStartMs(value: string): number | null {
+  if (!value) return null;
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d).getTime();
+}
+
+const dateInputStyle: React.CSSProperties = {
+  colorScheme: "dark",
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 6,
+  color: "#c8c8d8",
+  fontFamily: "'JetBrains Mono', monospace",
+  fontSize: 10.5,
+  padding: "3px 6px",
+  minWidth: 0,
+};
+
+// Tabla de registro de trades — más reciente primero, con filtro por rango y scroll interno.
+function TradesTable({ points }: { points: PnLPoint[] }) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const fromMs = dayStartMs(from);
+  const toMs = dayStartMs(to);
+  const toEndMs = toMs != null ? toMs + 24 * 3600 * 1000 - 1 : null; // inclusive end-of-day
+
+  const rows = [...points]
+    .reverse()
+    .filter((t) => {
+      const ms = new Date(t.ts).getTime();
+      if (isNaN(ms)) return true;
+      if (fromMs != null && ms < fromMs) return false;
+      if (toEndMs != null && ms > toEndMs) return false;
+      return true;
+    });
+
+  const filtered = !!from || !!to;
+
+  return (
+    <div style={{ borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 12 }}>
+      {/* Header: title + date-range filter */}
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+        <p className="text-[10px] uppercase tracking-widest" style={{ color: "#44445a" }}>
+          Trade Log <span style={{ color: "#33334a" }}>({rows.length})</span>
+        </p>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[9px] uppercase tracking-wide" style={{ color: "#44445a" }}>From</span>
+          <input type="date" value={from} max={to || undefined}
+            onChange={(e) => setFrom(e.target.value)} style={dateInputStyle} aria-label="From date" />
+          <span className="text-[9px] uppercase tracking-wide" style={{ color: "#44445a" }}>To</span>
+          <input type="date" value={to} min={from || undefined}
+            onChange={(e) => setTo(e.target.value)} style={dateInputStyle} aria-label="To date" />
+          {filtered && (
+            <button
+              onClick={() => { setFrom(""); setTo(""); }}
+              className="text-[9px] uppercase tracking-wide rounded px-1.5 py-1"
+              style={{ color: "#8888aa", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable table with sticky header */}
+      <div style={{ maxHeight: 260, overflowY: "auto", overflowX: "auto" }}>
+        <table className="w-full" style={{ borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace" }}>
+          <thead>
+            <tr style={{ color: "#44445a", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <th className="text-left font-medium py-1 pr-2"  style={stickyTh}>Time</th>
+              <th className="text-left font-medium py-1 pr-2"  style={stickyTh}>Side</th>
+              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Entry</th>
+              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Exit</th>
+              <th className="text-center font-medium py-1 pr-2" style={stickyTh}>Reason</th>
+              <th className="text-right font-medium py-1"      style={stickyTh}>PnL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="py-4 text-center text-[11px]" style={{ color: "#44445a" }}>
+                  No trades in selected range
+                </td>
+              </tr>
+            ) : rows.map((t) => {
+              const win = t.pnl >= 0;
+              const sideColor = t.side === "LONG" ? "#22d27a" : "#f05060";
+              return (
+                <tr key={t.id} style={{ borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 10.5 }}>
+                  <td className="py-1.5 pr-2" style={{ color: "#8888aa", whiteSpace: "nowrap" }}>{fmtTime(t.ts)}</td>
+                  <td className="py-1.5 pr-2" style={{ color: sideColor, fontWeight: 700 }}>{t.side}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: "#c8c8d8" }}>{fmtPrice(t.entry_price)}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: "#c8c8d8" }}>{fmtPrice(t.exit_price)}</td>
+                  <td className="py-1.5 pr-2 text-center" style={{ color: "#8888aa" }}>{reasonLabel(t.exit_reason)}</td>
+                  <td className="py-1.5 text-right tabular-nums font-semibold" style={{ color: win ? "#22d27a" : "#f05060" }}>
+                    {win ? "+" : ""}{t.pnl.toFixed(2)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const stickyTh: React.CSSProperties = {
+  position: "sticky",
+  top: 0,
+  background: "#0a0a14",
+  zIndex: 1,
+  whiteSpace: "nowrap",
+};
 
 interface PnLTooltipProps {
   active?: boolean;
@@ -146,6 +287,9 @@ export function PnLChart() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+
+            {/* Trade log table */}
+            <TradesTable points={points} />
           </div>
         )}
       </div>
