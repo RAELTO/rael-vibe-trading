@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
+import { Info } from "lucide-react";
 import { Panel } from "./Panel";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -25,7 +26,44 @@ interface PnLPoint {
 
 function fmtSize(v: number | null | undefined): string {
   if (!v) return "—";
-  return v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+// Column header with a hover tooltip explaining the value.
+function InfoHeader({ label, tip, tipSide = "right" }: { label: string; tip: string; tipSide?: "left" | "right" }) {
+  return (
+    <span className="relative group inline-flex items-center gap-1" style={{ cursor: "help" }}>
+      {label}
+      <Info size={11} style={{ opacity: 0.45 }} />
+      <span
+        role="tooltip"
+        className="pointer-events-none opacity-0 group-hover:opacity-100"
+        style={{
+          position: "absolute",
+          top: "calc(100% + 6px)",
+          ...(tipSide === "left" ? { left: 0 } : { right: 0 }),
+          width: 190,
+          padding: "6px 9px",
+          borderRadius: 6,
+          background: "#08080f",
+          border: "1px solid rgba(0,212,255,0.2)",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+          color: "#c8c8d8",
+          fontSize: 10,
+          lineHeight: 1.4,
+          fontWeight: 400,
+          textTransform: "none",
+          letterSpacing: "normal",
+          whiteSpace: "normal",
+          textAlign: "left",
+          zIndex: 20,
+          transition: "opacity 0.15s ease",
+        }}
+      >
+        {tip}
+      </span>
+    </span>
+  );
 }
 
 function fmtPrice(v: number | null | undefined): string {
@@ -123,11 +161,21 @@ function TradesTable({ points }: { points: PnLPoint[] }) {
             <tr style={{ color: "#44445a", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em" }}>
               <th className="text-left font-medium py-1 pr-2"  style={stickyTh}>Time</th>
               <th className="text-left font-medium py-1 pr-2"  style={stickyTh}>Side</th>
-              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Entry</th>
-              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Exit</th>
-              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>Size</th>
-              <th className="text-center font-medium py-1 pr-2" style={stickyTh}>Reason</th>
-              <th className="text-right font-medium py-1"      style={stickyTh}>PnL</th>
+              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>
+                <InfoHeader label="Entry" tip="Average fill price when the position was opened." />
+              </th>
+              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>
+                <InfoHeader label="Exit" tip="Price at which the position was closed." />
+              </th>
+              <th className="text-right font-medium py-1 pr-2" style={stickyTh}>
+                <InfoHeader label="Size" tip="Position notional in USDT (quantity × entry price) — the money placed on the trade." />
+              </th>
+              <th className="text-center font-medium py-1 pr-2" style={stickyTh}>
+                <InfoHeader label="Reason" tip="How the trade closed: TP take-profit, SL stop-loss, LIQ liquidation, TRAIL trailing stop." />
+              </th>
+              <th className="text-right font-medium py-1"      style={stickyTh}>
+                <InfoHeader label="PnL" tip="Realized profit/loss in USDT for the trade." />
+              </th>
             </tr>
           </thead>
           <tbody>

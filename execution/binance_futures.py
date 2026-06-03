@@ -322,15 +322,21 @@ class BinanceFuturesClient:
                 qty = float(p["positionAmt"])
                 if abs(qty) > 0:
                     leverage = self._leverage_cache.get(symbol, DEFAULT_LEVERAGE)
+                    side = "LONG" if qty > 0 else "SHORT"
+                    # Liquidación real de Binance (refleja el modo de margen activo:
+                    # en cross usa todo el balance, así que queda muy lejos). Si Binance
+                    # devuelve 0, caemos a la estimación isolated como respaldo.
+                    liq_real = float(p.get("liquidationPrice", 0) or 0)
+                    liq = liq_real if liq_real > 0 else self.calculate_liquidation_price(
+                        side, float(p["entryPrice"]), leverage
+                    )
                     return {
                         "symbol":            p["symbol"],
-                        "side":              "LONG" if qty > 0 else "SHORT",
+                        "side":              side,
                         "quantity":          abs(qty),
                         "entry_price":       float(p["entryPrice"]),
                         "unrealized_pnl":    float(p["unRealizedProfit"]),
-                        "liquidation_price": self.calculate_liquidation_price(
-                            "LONG" if qty > 0 else "SHORT", float(p["entryPrice"]), leverage
-                        ),
+                        "liquidation_price": liq,
                         "leverage":          leverage,
                         "mark_price":        float(p.get("markPrice", 0)),
                     }
@@ -372,7 +378,10 @@ class BinanceFuturesClient:
         self, side: str, entry_price: float, leverage: int
     ) -> float:
         """
-        Precio de liquidación aproximado para margen cruzado (cross margin).
+        Estimación de liquidación para margen AISLADO (isolated) al leverage dado.
+        Es una cota conservadora (más cercana que la liquidación real en cross, donde
+        todo el balance respalda la posición). Se usa para la validación de riesgo y
+        como respaldo si Binance no devuelve liquidationPrice.
         LONG:  entry × (1 - 1/leverage + MMR)
         SHORT: entry × (1 + 1/leverage - MMR)
         """
