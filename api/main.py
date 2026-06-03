@@ -184,7 +184,7 @@ def get_pnl_history(limit: int = 50):
         con.row_factory = sqlite3.Row
         rows = con.execute(
             """SELECT id, symbol, side, entry_price, exit_price, pnl,
-                      exit_reason, closed_at, mode
+                      exit_reason, ts_close, mode
                FROM trades WHERE status='CLOSED'
                ORDER BY id DESC LIMIT ?""",
             (limit,),
@@ -193,7 +193,7 @@ def get_pnl_history(limit: int = 50):
         points = [
             {
                 "id":          r["id"],
-                "ts":          r["closed_at"],
+                "ts":          r["ts_close"],
                 "symbol":      r["symbol"],
                 "side":        r["side"],
                 "pnl":         r["pnl"],

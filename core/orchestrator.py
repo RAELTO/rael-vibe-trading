@@ -90,8 +90,6 @@ SYNTHESIS_TIMEOUT  = int(os.getenv("SYNTHESIS_TIMEOUT_SECONDS", "60"))
 GATE_TIMEOUT       = int(os.getenv("GATE_TIMEOUT_SECONDS", "15"))
 DECISION_TIMEOUT   = int(os.getenv("DEEPSEEK_DECISION_TIMEOUT_SECONDS", "45"))
 CLAUDE_AUDIT_ENABLED = os.getenv("CLAUDE_AUDIT_ENABLED", "true").lower() == "true"
-CLAUDE_AUDIT_MIN_CONF = float(os.getenv("CLAUDE_AUDIT_MIN_CONF", "0.58"))
-CLAUDE_AUDIT_MAX_CONF = float(os.getenv("CLAUDE_AUDIT_MAX_CONF", "0.66"))
 CLAUDE_ADVISOR_ENABLED = os.getenv("CLAUDE_ADVISOR_ENABLED", "true").lower() == "true"
 
 # Horario de trading — limita SOLO el loop de decisiones (el monitor de posiciones sigue 24/7).
@@ -929,12 +927,10 @@ class TradingOrchestrator:
             _log(f"AVOID TRADING activo: {news_ctx.get('avoid_reason')}", "WARN")
             return
 
-        if (
-            self._audit_agent
-            and CLAUDE_AUDIT_ENABLED
-            and CLAUDE_AUDIT_MIN_CONF <= conviction <= CLAUDE_AUDIT_MAX_CONF
-        ):
-            _log("CLAUDE AUDIT - señal borderline, revisando antes de ejecutar...", "INFO")
+        # Audit EVERY BUY/SELL that reaches this point (vote is LONG/SHORT and
+        # conviction >= MIN_CONVICTION). Claude can only veto, never force.
+        if self._audit_agent and CLAUDE_AUDIT_ENABLED:
+            _log("CLAUDE AUDIT — reviewing trade before execution...", "INFO")
             try:
                 audit = await asyncio.wait_for(
                     self._audit_agent.audit_decision(signal, market_data, context),
@@ -950,13 +946,14 @@ class TradingOrchestrator:
                 )
                 self.store.save_gate_result(self._cycle, symbol, approved, f"Claude audit: {reason}")
                 if not approved:
-                    _log(f"Claude audit BLOQUEO: {reason}", "WARN")
+                    _log(f"Claude audit BLOCK: {reason}", "WARN")
                     await broadcast_error(f"Claude audit rejected: {reason}")
                     return
             except Exception as e:
-                _log(f"Claude audit failed; bloqueando por conservador: {e}", "WARN")
-                await broadcast_error(f"Claude audit failed: {e}")
-                return
+                # Fail-open: if Claude is out of tokens or the auditor fails/times out,
+                # let the trade through rather than blocking it.
+                _log(f"Claude audit unavailable; allowing trade (fail-open): {e}", "WARN")
+                await broadcast_error(f"Claude audit unavailable — trade allowed: {e}")
 
         await self._execute_order(symbol, vote, conviction, market_data, balance, [signal])
 

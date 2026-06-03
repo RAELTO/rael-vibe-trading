@@ -30,40 +30,40 @@ class WebSearchAgent:
         self.max_searches = int(os.getenv("NEWS_SEARCH_MAX_USES", 8))
 
     def analyze_with_gpt_search(self) -> dict:
-        prompt = f"""Eres un analista de riesgo macro, regulatorio y on-chain para un sistema de daytrading de Bitcoin futures (BTCUSDT).
+        prompt = f"""You are a macro, regulatory and on-chain risk analyst for a Bitcoin futures (BTCUSDT) daytrading system.
 
-Busca en la web informacion reciente y verificable sobre:
-- Bitcoin, BTCUSDT, ETF spot de Bitcoin, flows de BlackRock/Fidelity/IBIT/FBTC.
-- Regulacion crypto relevante en Estados Unidos y mercados principales.
-- Hacks, insolvencias, depegs de stablecoins, liquidaciones o eventos sistemicos.
-- Fed, tasas, inflacion, dolar, riesgo macro y geopolítica con impacto directo en BTC.
-- Datos on-chain/noticias de whales, miners, hashrate o exchange reserves solo si vienen de fuentes serias.
+Search the web for recent, verifiable information about:
+- Bitcoin, BTCUSDT, spot Bitcoin ETFs, flows from BlackRock/Fidelity/IBIT/FBTC.
+- Relevant crypto regulation in the United States and major markets.
+- Hacks, insolvencies, stablecoin depegs, liquidations or systemic events.
+- Fed, rates, inflation, the dollar, macro risk and geopolitics with direct impact on BTC.
+- On-chain data / news about whales, miners, hashrate or exchange reserves only if from reputable sources.
 
-Fecha/hora UTC actual: {datetime.now(timezone.utc).isoformat()}
-Prioriza hasta {self.max_searches} fuentes recientes y confiables.
+Current UTC date/time: {datetime.now(timezone.utc).isoformat()}
+Prioritize up to {self.max_searches} recent and trustworthy sources.
 
-Tu tarea principal es detectar CATALIZADORES VERIFICABLES de alto impacto: eventos concretos con evidencia real que historicamente pueden mover BTC de forma significativa.
+Your main task is to detect VERIFIABLE high-impact CATALYSTS: concrete events with real evidence that historically can move BTC significantly.
 
-Ejemplos que califican:
-- Un gobierno, regulador o empresa importante anuncia una accion oficial sobre BTC.
-- La SEC, CFTC, Fed u otro regulador anuncia algo inesperado.
-- Un ETF tiene flujo extraordinario confirmado por fuente seria.
-- Un exchange importante sufre hack, insolvencia o interrupcion confirmada.
-- Un stablecoin relevante pierde paridad de forma confirmada.
+Examples that qualify:
+- A government, regulator or major company announces an official action on BTC.
+- The SEC, CFTC, Fed or another regulator announces something unexpected.
+- An ETF has extraordinary flow confirmed by a reputable source.
+- A major exchange suffers a confirmed hack, insolvency or outage.
+- A relevant stablecoin confirmedly loses its peg.
 
-No califican como catalizador:
-- Predicciones de precio, posts virales, rumores o analisis tecnico de terceros.
-- Noticias repetidas sin novedad concreta.
-- Movimiento de precio sin causa verificable.
+Does NOT qualify as a catalyst:
+- Price predictions, viral posts, rumors or third-party technical analysis.
+- Repeated news with no concrete novelty.
+- Price movement with no verifiable cause.
 
-Responde UNICAMENTE con JSON valido, sin markdown, con esta estructura exacta:
+Respond ONLY with valid JSON, no markdown, with this exact structure:
 {{
   "overall_sentiment": 0.0,
   "market_impact": "HIGH|MEDIUM|LOW",
   "risk_level": "HIGH|MEDIUM|LOW",
-  "geopolitical_summary": "Resumen de 2 oraciones sobre macro relevante para BTC",
-  "crypto_summary": "Resumen de 2 oraciones sobre noticias especificas de Bitcoin",
-  "key_events": ["evento1", "evento2", "evento3"],
+  "geopolitical_summary": "2-sentence summary of macro relevant to BTC",
+  "crypto_summary": "2-sentence summary of Bitcoin-specific news",
+  "key_events": ["event1", "event2", "event3"],
   "asset_scores": {{
     "BTCUSDT": 0.0
   }},
@@ -75,24 +75,24 @@ Responde UNICAMENTE con JSON valido, sin markdown, con esta estructura exacta:
   "verified_catalyst": false,
   "catalyst_direction": "BULLISH|BEARISH|NEUTRAL",
   "catalyst_veracity": 0.0,
-  "catalyst_evidence": "Evento concreto y fuentes que lo confirman, o vacio si no hay catalizador",
-  "sources": ["https://fuente1", "https://fuente2"]
+  "catalyst_evidence": "Concrete event and the sources confirming it, or empty if there is no catalyst",
+  "sources": ["https://source1", "https://source2"]
 }}
 
-Reglas:
-- Considera SOLO noticias de las ULTIMAS 48 HORAS. Ignora el telon de fondo ya conocido
-  (aprobacion historica de ETFs spot, adopcion institucional general, regulacion ya vigente):
-  eso es CONTEXTO, no un catalizador. No lo reportes como evento ni infles el impacto por ello.
-- market_impact=HIGH SOLO si verified_catalyst=true (evento fresco, fechado, con fuente seria).
-  NUNCA pongas market_impact=HIGH con verified_catalyst=false. Ante la duda usa LOW o MEDIUM.
-- Si solo hay ruido de fondo, analisis de terceros o noticias repetidas sin novedad concreta:
-  market_impact=LOW, overall_sentiment cercano a 0.0, recommended_action_bias=HOLD, avoid_trading=false.
-- overall_sentiment refleja el tono direccional NETO de noticias FRESCAS (-1 muy bajista a +1 muy alcista; 0 = neutral o sin novedad).
-- avoid_trading=true SOLO ante un evento sistemico adverso CONFIRMADO (hack mayor, depeg, shock regulatorio inesperado). En ningun otro caso.
-- verified_catalyst=true solo si hay un evento concreto verificable con fuente identificable.
-- catalyst_veracity 0.9+ requiere fuente primaria u oficial; 0.7 requiere multiples medios serios; menos de 0.7 debe dejar verified_catalyst=false.
-- Si no hay catalizador claro, usa HOLD, verified_catalyst=false y catalyst_veracity=0.0.
-- No inventes fuentes. Incluye solo URLs consultadas o citadas por la busqueda."""
+Rules:
+- Consider ONLY news from the LAST 48 HOURS. Ignore the already-known backdrop
+  (historical spot-ETF approval, general institutional adoption, regulation already in force):
+  that is CONTEXT, not a catalyst. Do not report it as an event or inflate impact because of it.
+- market_impact=HIGH ONLY if verified_catalyst=true (a fresh, dated event with a reputable source).
+  NEVER set market_impact=HIGH with verified_catalyst=false. When in doubt use LOW or MEDIUM.
+- If there is only background noise, third-party analysis or repeated news with no concrete novelty:
+  market_impact=LOW, overall_sentiment close to 0.0, recommended_action_bias=HOLD, avoid_trading=false.
+- overall_sentiment reflects the NET directional tone of FRESH news (-1 very bearish to +1 very bullish; 0 = neutral or no novelty).
+- avoid_trading=true ONLY for a CONFIRMED adverse systemic event (major hack, depeg, unexpected regulatory shock). In no other case.
+- verified_catalyst=true only if there is a concrete, verifiable event with an identifiable source.
+- catalyst_veracity 0.9+ requires a primary or official source; 0.7 requires multiple reputable outlets; below 0.7 must leave verified_catalyst=false.
+- If there is no clear catalyst, use HOLD, verified_catalyst=false and catalyst_veracity=0.0.
+- Do not invent sources. Include only URLs consulted or cited by the search."""
 
         try:
             if "search-preview" in self.model:
@@ -149,16 +149,16 @@ Reglas:
         if default.get("market_impact") == "HIGH" and not default.get("verified_catalyst"):
             default["market_impact"] = "LOW"
 
-        # Guardarraíl: avoid_trading se reserva para EMERGENCIAS SISTÉMICAS reales
-        # (hack, exploit, depeg, halt, insolvencia, flash crash). Un sesgo bajista/alcista
-        # NO es motivo para frenar todo — el modelo puede operar la dirección (incl. SHORT).
-        # Si el motivo no es sistémico, se libera el freno y la noticia queda como contexto direccional.
+        # Guardrail: avoid_trading is reserved for real SYSTEMIC EMERGENCIES
+        # (hack, exploit, depeg, halt, insolvency, flash crash). A bearish/bullish bias
+        # is NOT a reason to halt everything — the model can trade the direction (incl. SHORT).
+        # If the reason is not systemic, the brake is released and the news stays as directional context.
         if default.get("avoid_trading"):
             reason = (default.get("avoid_reason") or "").lower()
             systemic_kw = (
-                "hack", "exploit", "depeg", "desancl", "insolv", "halt", "suspens",
-                "flash crash", "colaps", "quiebra", "bancarrota", "ataque", "breach",
-                "freeze", "congel", "liquidación masiva", "liquidacion masiva",
+                "hack", "exploit", "depeg", "insolv", "halt", "suspend",
+                "flash crash", "collapse", "bankrupt", "attack", "breach",
+                "freeze", "mass liquidation", "outage", "exploit",
             )
             if not any(k in reason for k in systemic_kw):
                 default["avoid_trading"] = False
@@ -170,8 +170,8 @@ Reglas:
             "overall_sentiment": 0.0,
             "market_impact": "LOW",
             "risk_level": "MEDIUM",
-            "geopolitical_summary": "Sin datos disponibles",
-            "crypto_summary": "Sin datos disponibles",
+            "geopolitical_summary": "No data available",
+            "crypto_summary": "No data available",
             "key_events": [],
             "asset_scores": {"BTCUSDT": 0.0},
             "recommended_asset": "BTCUSDT",

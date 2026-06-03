@@ -7,19 +7,19 @@ import anthropic
 
 class ClaudeAdvisorAgent:
     """
-    Capa de aprendizaje y revisión con Claude.
+    Claude learning and review layer.
 
-    A diferencia del auditor (que veta señales borderline antes de ejecutar), este
-    agente NO interviene en la ejecución. Tiene dos funciones de mejora continua:
+    Unlike the auditor (which vetoes borderline signals before execution), this
+    agent does NOT intervene in execution. It has two continuous-improvement roles:
 
-      1. post_mortem(): tras cerrar un trade, analiza por qué ganó o perdió y
-         extrae una lección accionable + una etiqueta de patrón. Las lecciones se
-         acumulan en la DB e se inyectan en el prompt del decisor (DeepSeek).
-      2. daily_review(): una vez al día resume el desempeño (win-rate, PnL, sesgos)
-         y propone ajustes. Se muestra en el dashboard.
+      1. post_mortem(): after a trade closes, it analyzes why it won or lost and
+         extracts an actionable lesson + a pattern tag. Lessons accumulate in the
+         DB and are injected into the decider's (DeepSeek) prompt.
+      2. daily_review(): once a day it summarizes performance (win-rate, PnL,
+         biases) and proposes adjustments. Shown on the dashboard.
 
-    Ninguna de las dos puede abrir/cerrar órdenes ni cambiar el riesgo — solo
-    producen texto que el sistema usa como contexto.
+    Neither can open/close orders or change risk — they only produce text the
+    system uses as context.
     """
 
     POST_MORTEM_SYSTEM = (
@@ -58,7 +58,7 @@ class ClaudeAdvisorAgent:
 
     @staticmethod
     def _entry_rationale(trade: dict) -> str:
-        """Extrae el razonamiento de entrada guardado en agent_votes (si existe)."""
+        """Extract the entry rationale stored in agent_votes (if present)."""
         raw = trade.get("agent_votes")
         if not raw:
             return "no entry rationale recorded"

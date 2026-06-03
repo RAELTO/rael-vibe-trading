@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Badge, decisionVariant } from "./Badge";
-import type { DecisionEntry } from "../types";
+import type { DecisionEntry, ActivePosition } from "../types";
 
 // Fallback si el backend aún no envió la config (evento WS "init")
 const DEFAULT_CYCLE_SECONDS = 900;
@@ -9,6 +9,7 @@ interface DecisionPanelProps {
   decision: DecisionEntry | null;
   tradingMode?: string;
   intervalSeconds?: number;
+  activePosition?: ActivePosition | null;
 }
 
 function translateDecision(d: string, mode?: string) {
@@ -86,10 +87,14 @@ function parseReason(raw: string): string {
   return cleaned || first;
 }
 
-export function DecisionPanel({ decision, tradingMode, intervalSeconds }: DecisionPanelProps) {
+export function DecisionPanel({ decision, tradingMode, intervalSeconds, activePosition }: DecisionPanelProps) {
   const cycleSeconds = intervalSeconds ?? DEFAULT_CYCLE_SECONDS;
   const cycleProgress = useCycleProgress(decision?.ts ?? null, cycleSeconds);
   const minutesLeft = Math.max(0, Math.round((1 - cycleProgress) * (cycleSeconds / 60)));
+
+  // Con una posición abierta el decisor se pausa (máx. 1 posición) hasta que
+  // la operación cierre por TP/SL. Mostramos eso en vez de "NEXT CYCLE 0m".
+  const isPaused = !!activePosition;
 
   const sigColor = !decision
     ? "#8888aa"
@@ -111,24 +116,40 @@ export function DecisionPanel({ decision, tradingMode, intervalSeconds }: Decisi
           Last Decision
         </h2>
 
-        {/* Cycle progress */}
-        <div className="flex items-center gap-2">
-          <div style={{ height: 2, width: 44, background: "rgba(255,255,255,0.07)", borderRadius: 1, overflow: "hidden" }}>
-            <div style={{
-              width: `${cycleProgress * 100}%`, height: "100%",
-              background: "#00d4ff",
-              boxShadow: "0 0 4px #00d4ff",
-              transition: "width 10s linear",
+        {/* Cycle progress / paused indicator */}
+        {isPaused ? (
+          <div className="flex items-center gap-1.5">
+            <span className="animate-pulse-dot" style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: "#f0a030", boxShadow: "0 0 6px #f0a030",
             }} />
+            <span style={{
+              fontSize: 9, color: "#f0a030",
+              fontFamily: "'JetBrains Mono', monospace",
+              whiteSpace: "nowrap", letterSpacing: "0.5px",
+            }}>
+              PAUSED · IN POSITION
+            </span>
           </div>
-          <span style={{
-            fontSize: 9, color: "#44445a",
-            fontFamily: "'JetBrains Mono', monospace",
-            whiteSpace: "nowrap",
-          }}>
-            NEXT CYCLE {minutesLeft}m
-          </span>
-        </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <div style={{ height: 2, width: 44, background: "rgba(255,255,255,0.07)", borderRadius: 1, overflow: "hidden" }}>
+              <div style={{
+                width: `${cycleProgress * 100}%`, height: "100%",
+                background: "#00d4ff",
+                boxShadow: "0 0 4px #00d4ff",
+                transition: "width 10s linear",
+              }} />
+            </div>
+            <span style={{
+              fontSize: 9, color: "#44445a",
+              fontFamily: "'JetBrains Mono', monospace",
+              whiteSpace: "nowrap",
+            }}>
+              NEXT CYCLE {minutesLeft}m
+            </span>
+          </div>
+        )}
       </header>
 
       {/* Body */}

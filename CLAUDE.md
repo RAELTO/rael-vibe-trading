@@ -2,7 +2,7 @@
 
 ## Identidad del proyecto
 
-Sistema automatizado de daytrading de **BTCUSDT perpetual futures** en Binance Testnet. El modo de decisión por defecto es **`DEEPSEEK_SINGLE`**: un único agente DeepSeek decide BUY/SELL/HOLD con una convicción, y un auditor Claude revisa solo las señales borderline. Un orquestador central coordina los loops, valida riesgos y ejecuta órdenes con stop-loss y take-profit automáticos. Existen modos `MULTI_AGENT` y `ENSEMBLE` (legacy, ver más abajo).
+Sistema automatizado de daytrading de **BTCUSDT perpetual futures** en Binance Testnet. El modo de decisión por defecto es **`DEEPSEEK_SINGLE`**: un único agente DeepSeek decide BUY/SELL/HOLD con una convicción, y un auditor Claude revisa **toda** señal BUY/SELL antes de ejecutar (veto unidireccional; **fail-open**: si Claude falla o se queda sin tokens, el trade pasa). Un orquestador central coordina los loops, valida riesgos y ejecuta órdenes con stop-loss y take-profit automáticos. Existen modos `MULTI_AGENT` y `ENSEMBLE` (legacy, ver más abajo).
 
 ## Arranque rápido
 
@@ -24,7 +24,7 @@ core/orchestrator.py      ← Punto de entrada. asyncio.gather de 5 loops:
   │                          API + News + Trading + Reconnect + PositionMonitor
   ├── agents/
   │     deepseek_decision_agent.py  PRIMARIO (modo DEEPSEEK_SINGLE) — decisión única en JSON
-  │     claude_audit_agent.py       Auditor — revisa señales borderline antes de ejecutar
+  │     claude_audit_agent.py       Auditor — revisa toda señal BUY/SELL antes de ejecutar (fail-open)
   │     web_search_agent.py         Noticias GPT web-search (no vota; corre cada 3h)
   │     claude/qwen/deepseek/gpt/local_agent.py  Ensemble legacy (solo modo ENSEMBLE)
   │     technical/sentiment/quant/synthesis/gate_agent.py  Pipeline legacy (modo MULTI_AGENT)
@@ -44,7 +44,7 @@ core/orchestrator.py      ← Punto de entrada. asyncio.gather de 5 loops:
 
 1. Cada `ANALYSIS_INTERVAL_SECONDS` (15 min) el trading loop arma el contexto (mercado, derivados, noticias, historial de trades, posición activa).
 2. **Dentro del horario de trading** llama a `DeepSeekDecisionAgent.analyze()` → devuelve JSON `{vote, confidence, reasoning, ...}`.
-3. Si `confidence >= MIN_CONVICTION` y vote es BUY/SELL, y la señal es borderline (`0.58–0.66`), el **auditor Claude** la aprueba o bloquea.
+3. Si `confidence >= MIN_CONVICTION` y vote es BUY/SELL, el **auditor Claude** revisa la señal y la aprueba o bloquea (veto unidireccional). Si el auditor falla o se queda sin tokens, **fail-open**: el trade pasa.
 4. `RiskManager.validate_futures_order()` valida tamaño, liquidación, pérdida diaria y máximo de posiciones. **El modelo nunca dimensiona la orden ni fija SL/TP — eso es código.**
 5. Se abre la posición con SL/TP automáticos; el PositionMonitor la gestiona 24/7.
 
@@ -79,7 +79,7 @@ El decisor solo abre posiciones nuevas dentro de la ventana `[TRADING_HOURS_STAR
 |----------|--------------|------|
 | `DECISION_MODE` | `DEEPSEEK_SINGLE` | Modo de decisión. Alternativas: `MULTI_AGENT`, `ENSEMBLE` (legacy) |
 | `DEEPSEEK_DECISION_MODEL` | `deepseek-chat` | Modelo decisor principal (JSON mode) |
-| `CLAUDE_AUDIT_MODEL` | `claude-sonnet-4-6` | Auditor de señales borderline |
+| `CLAUDE_AUDIT_MODEL` | `claude-sonnet-4-6` | Auditor — revisa toda señal BUY/SELL (fail-open) |
 | `TRADING_MODE` | `FUTURES` | `FUTURES` o `SPOT` |
 | `ANALYSIS_INTERVAL_SECONDS` | `900` | 15 min entre ciclos de decisión |
 | `NEWS_INTERVAL_SECONDS` | `10800` | 3 h entre búsquedas de noticias |
@@ -90,7 +90,6 @@ El decisor solo abre posiciones nuevas dentro de la ventana `[TRADING_HOURS_STAR
 | `TRADING_HOURS_ENABLED` | `true` | Activa el horario de trading |
 | `TRADING_HOURS_START` / `_END` | `8` / `20` | Ventana activa (hora) |
 | `TRADING_TIMEZONE` | `UTC` | Zona de la ventana (ej: `America/Bogota`) |
-| `CLAUDE_AUDIT_MIN_CONF` / `_MAX_CONF` | `0.58` / `0.66` | Rango borderline que audita Claude |
 | `TRADING_BUDGET_USDT` | `1000.0` | Capital operativo de referencia |
 | `AGENT_TIMEOUT_SECONDS` | `60` | Timeout por agente |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | LocalAgent (solo ENSEMBLE) |
