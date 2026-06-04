@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { Info } from "lucide-react";
 import { Panel } from "./Panel";
+import { HoverTip } from "./HoverTip";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -32,37 +33,10 @@ function fmtSize(v: number | null | undefined): string {
 // Column header with a hover tooltip explaining the value.
 function InfoHeader({ label, tip, tipSide = "right" }: { label: string; tip: string; tipSide?: "left" | "right" }) {
   return (
-    <span className="relative group inline-flex items-center gap-1" style={{ cursor: "help" }}>
+    <HoverTip tip={tip} align={tipSide}>
       {label}
       <Info size={11} style={{ opacity: 0.45 }} />
-      <span
-        role="tooltip"
-        className="pointer-events-none opacity-0 group-hover:opacity-100"
-        style={{
-          position: "absolute",
-          top: "calc(100% + 6px)",
-          ...(tipSide === "left" ? { left: 0 } : { right: 0 }),
-          width: 190,
-          padding: "6px 9px",
-          borderRadius: 6,
-          background: "#08080f",
-          border: "1px solid rgba(0,212,255,0.2)",
-          boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
-          color: "#c8c8d8",
-          fontSize: 10,
-          lineHeight: 1.4,
-          fontWeight: 400,
-          textTransform: "none",
-          letterSpacing: "normal",
-          whiteSpace: "normal",
-          textAlign: "left",
-          zIndex: 20,
-          transition: "opacity 0.15s ease",
-        }}
-      >
-        {tip}
-      </span>
-    </span>
+    </HoverTip>
   );
 }
 
@@ -136,21 +110,25 @@ function TradesTable({ points }: { points: PnLPoint[] }) {
           Trade Log <span style={{ color: "#33334a" }}>({rows.length})</span>
         </p>
         <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={() => { setFrom(""); setTo(""); }}
+            title="Clear date range — show all trades"
+            className="text-[9px] uppercase tracking-wide rounded px-2 py-1 transition-colors"
+            style={{
+              color: filtered ? "#8888aa" : "#00d4ff",
+              background: filtered ? "rgba(255,255,255,0.04)" : "rgba(0,212,255,0.12)",
+              border: `1px solid ${filtered ? "rgba(255,255,255,0.08)" : "rgba(0,212,255,0.3)"}`,
+              cursor: "pointer",
+            }}
+          >
+            All
+          </button>
           <span className="text-[9px] uppercase tracking-wide" style={{ color: "#44445a" }}>From</span>
           <input type="date" value={from} max={to || undefined}
             onChange={(e) => setFrom(e.target.value)} style={dateInputStyle} aria-label="From date" />
           <span className="text-[9px] uppercase tracking-wide" style={{ color: "#44445a" }}>To</span>
           <input type="date" value={to} min={from || undefined}
             onChange={(e) => setTo(e.target.value)} style={dateInputStyle} aria-label="To date" />
-          {filtered && (
-            <button
-              onClick={() => { setFrom(""); setTo(""); }}
-              className="text-[9px] uppercase tracking-wide rounded px-1.5 py-1"
-              style={{ color: "#8888aa", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-            >
-              Clear
-            </button>
-          )}
         </div>
       </div>
 
@@ -168,7 +146,7 @@ function TradesTable({ points }: { points: PnLPoint[] }) {
                 <InfoHeader label="Exit" tip="Price at which the position was closed." />
               </th>
               <th className="text-right font-medium py-1 pr-2" style={stickyTh}>
-                <InfoHeader label="Size" tip="Position notional in USDT (quantity × entry price) — the money placed on the trade." />
+                <InfoHeader label="Size" tip="Position notional in USDT — the money placed on the trade." />
               </th>
               <th className="text-center font-medium py-1 pr-2" style={stickyTh}>
                 <InfoHeader label="Reason" tip="How the trade closed: TP take-profit, SL stop-loss, LIQ liquidation, TRAIL trailing stop." />

@@ -1,42 +1,16 @@
 import { AlertTriangle, Clock, Info } from "lucide-react";
 import { Panel } from "./Panel";
+import { HoverTip } from "./HoverTip";
 import type { ActivePosition } from "../types";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 // Inline info icon + hover tooltip, placed next to a label.
-function InfoDot({ tip, side = "left", vertical = "down" }: { tip: string; side?: "left" | "right"; vertical?: "up" | "down" }) {
+function InfoDot({ tip, side = "left" }: { tip: string; side?: "left" | "right" }) {
   return (
-    <span className="relative group inline-flex items-center" style={{ cursor: "help" }}>
+    <HoverTip tip={tip} align={side}>
       <Info size={11} style={{ opacity: 0.5 }} />
-      <span
-        role="tooltip"
-        className="pointer-events-none opacity-0 group-hover:opacity-100"
-        style={{
-          position: "absolute",
-          ...(vertical === "up" ? { bottom: "calc(100% + 6px)" } : { top: "calc(100% + 6px)" }),
-          ...(side === "left" ? { left: 0 } : { right: 0 }),
-          width: 200,
-          padding: "6px 9px",
-          borderRadius: 6,
-          background: "#08080f",
-          border: "1px solid rgba(0,212,255,0.2)",
-          boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
-          color: "#c8c8d8",
-          fontSize: 10,
-          lineHeight: 1.4,
-          fontWeight: 400,
-          textTransform: "none",
-          letterSpacing: "normal",
-          whiteSpace: "normal",
-          textAlign: "left",
-          zIndex: 20,
-          transition: "opacity 0.15s ease",
-        }}
-      >
-        {tip}
-      </span>
-    </span>
+    </HoverTip>
   );
 }
 
@@ -272,7 +246,6 @@ export function PositionPanel({ position, tradingMode }: PositionPanelProps) {
             </span>
             <InfoDot
               side="left"
-              vertical="up"
               tip="Price at which Binance force-closes the position. In cross margin it sits far away — your full balance backs it — and your stop-loss triggers long before this."
             />
           </div>
