@@ -471,8 +471,17 @@ class StateStore:
         cycle: int,
         exit_price: float,
         exit_reason: str,
+        realized_pnl: float | None = None,
     ) -> float:
-        """Cierra un trade. Retorna el PnL en USDT."""
+        """
+        Cierra un trade. Retorna el PnL en USDT.
+
+        Si se pasa `realized_pnl` (el PnL real reportado por Binance), se almacena tal cual
+        — es la fuente de verdad y garantiza que el PnL nunca contradiga el `exit_reason`
+        (p.ej. un cierre marcado TP no puede mostrar pérdida por un exit_price mal elegido).
+        Si es None (cierre offline sin datos de Binance, o SPOT), se recalcula por
+        diferencia de precios como fallback conservador.
+        """
         with _conn() as con:
             row = con.execute(
                 "SELECT entry_price, quantity, side FROM trades WHERE id = ?", (trade_id,)
@@ -483,14 +492,16 @@ class StateStore:
             qty   = row["quantity"]
             side  = row["side"]
 
+            # pnl_pct = movimiento de precio % (signo según dirección), siempre derivable.
             if side in ("BUY", "LONG"):
-                pnl     = (exit_price - entry) * qty
-                pnl_pct = (exit_price - entry) / entry * 100
+                pnl_pct   = (exit_price - entry) / entry * 100 if entry else 0.0
+                price_pnl = (exit_price - entry) * qty
             else:
-                pnl     = (entry - exit_price) * qty
-                pnl_pct = (entry - exit_price) / entry * 100
+                pnl_pct   = (entry - exit_price) / entry * 100 if entry else 0.0
+                price_pnl = (entry - exit_price) * qty
 
-            pnl     = round(pnl, 4)
+            # PnL en USDT: el realizado de Binance manda; el de precio es solo fallback.
+            pnl     = round(float(realized_pnl) if realized_pnl is not None else price_pnl, 4)
             pnl_pct = round(pnl_pct, 4)
 
             con.execute(

@@ -357,19 +357,27 @@ class TradingOrchestrator:
         except Exception as e:
             return e
 
-    def _resolve_close_from_binance(self, trade: dict) -> tuple[float, str]:
+    def _resolve_close_from_binance(self, trade: dict) -> tuple[float, str, float | None]:
         """
-        Determina el precio y la razón de cierre REALES de un trade cuya posición ya no
-        existe en Binance, consultando el historial (REALIZED_PNL + fills de cierre).
+        Determina el precio, la razón y el PnL de cierre REALES de un trade cuya posición
+        ya no existe en Binance, consultando los fills de cierre del historial.
 
-        Devuelve (exit_price, exit_reason). Si Binance no responde, hace fallback
-        conservador a (entry_price, "OFFLINE_CLOSE"). Compartido por la reconciliación
-        de arranque y por el monitor de posiciones, para que un cierre por TP/SL nunca
-        se registre erróneamente como LIQUIDATED con PnL 0.
+        Fuente de verdad única: los fills del lado de cierre de ESTE trade (los posteriores
+        al último fill de apertura). De ahí salen, de forma consistente entre sí:
+          - exit_price  = VWAP de esos fills (no el último fill suelto, que podía ser de
+                          otra orden y producía un precio — y un PnL — erróneos).
+          - realized_pnl = suma del `realizedPnl` que Binance reporta por fill (el PnL real
+                          del trade, no un recálculo por diferencia de precios).
+          - exit_reason = inferido del signo de ese mismo realized_pnl y la cercanía al SL,
+                          de modo que el motivo y el PnL NUNCA puedan contradecirse.
+
+        Devuelve (exit_price, exit_reason, realized_pnl). Si Binance no responde, hace
+        fallback conservador a (entry_price, "OFFLINE_CLOSE", None).
         """
         symbol = trade["symbol"]
-        exit_price  = trade["entry_price"]   # fallback conservador
-        exit_reason = "OFFLINE_CLOSE"
+        exit_price   = trade["entry_price"]   # fallback conservador
+        exit_reason  = "OFFLINE_CLOSE"
+        realized_pnl = None
         try:
             ts_open = trade.get("ts_open", "")
             start_ms = (
@@ -377,31 +385,39 @@ class TradingOrchestrator:
                 if ts_open else None
             )
 
-            # a) PnL realizado desde Binance income history
-            income_records = self.futures.client.futures_income_history(
-                symbol=symbol,
-                incomeType="REALIZED_PNL",
-                startTime=start_ms,
-                limit=20,
-            )
-            realized_pnl = (
-                sum(float(r["income"]) for r in income_records)
-                if income_records else None
-            )
-
-            # b) Fills de cierre para obtener el precio de salida real
+            # Fills de la cuenta desde la apertura. Cada fill trae `price`, `qty`, `side`,
+            # `time` y `realizedPnl` (PnL real de ese fill según Binance).
             fills = self.futures.client.futures_account_trades(
                 symbol=symbol,
                 startTime=start_ms,
                 limit=50,
-            )
-            entry_side  = trade["side"]
-            close_side  = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
-            close_fills = [f for f in (fills or []) if f["side"] == close_side]
-            if close_fills:
-                exit_price = float(close_fills[-1]["price"])
+            ) or []
 
-            # c) Inferir exit_reason a partir del PnL real y la cercanía al SL
+            entry_side = trade["side"]
+            open_side  = "BUY" if entry_side in ("BUY", "LONG") else "SELL"
+            close_side = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
+
+            # Aislar los fills de cierre de ESTE trade: los del lado de cierre que ocurren
+            # a partir del último fill de apertura (evita contaminar con trades posteriores
+            # o con fills sueltos de otras órdenes que caigan en la ventana).
+            last_open_ts = max(
+                (f["time"] for f in fills if f["side"] == open_side),
+                default=(start_ms or 0),
+            )
+            close_fills = [
+                f for f in fills
+                if f["side"] == close_side and f["time"] >= last_open_ts
+            ]
+
+            if close_fills:
+                total_qty = sum(float(f["qty"]) for f in close_fills)
+                if total_qty > 0:
+                    exit_price = sum(
+                        float(f["price"]) * float(f["qty"]) for f in close_fills
+                    ) / total_qty
+                realized_pnl = sum(float(f.get("realizedPnl", 0.0)) for f in close_fills)
+
+            # Inferir exit_reason a partir del PnL real y la cercanía al SL.
             sl = trade.get("sl_price")
             tp = trade.get("tp_price")
             if realized_pnl is not None:
@@ -416,7 +432,30 @@ class TradingOrchestrator:
         except Exception as e:
             _log(f"[Reconcile] Error buscando cierre en Binance: {e} — usando entry_price", "WARN")
 
-        return exit_price, exit_reason
+        return exit_price, exit_reason, realized_pnl
+
+    def _verify_close_consistency(self, trade_id: int, exit_reason: str, pnl: float):
+        """
+        Sanity-check tras cerrar un trade: el motivo y el PnL deben concordar en signo.
+        Tras unificar la fuente de verdad (realized_pnl de Binance), un cierre TP NO puede
+        traer PnL<0 ni un SL/LIQUIDATED PnL>0. Si ocurre, lo deja visible en el log como
+        regresión a investigar; si concuerda, deja constancia de que la corrección funciona.
+        """
+        inconsistent = (
+            (exit_reason == "TP" and pnl < 0)
+            or (exit_reason in ("SL", "LIQUIDATED") and pnl > 0)
+        )
+        if inconsistent:
+            _log(
+                f"[CloseCheck] ⚠ INCONSISTENCIA trade #{trade_id}: exit_reason={exit_reason} "
+                f"pero PnL={pnl:+.4f} USDT — revisar _resolve_close_from_binance",
+                "WARN",
+            )
+        else:
+            _log(
+                f"[CloseCheck] ✓ trade #{trade_id}: {exit_reason} ↔ PnL={pnl:+.4f} USDT (coherente)",
+                "OK",
+            )
 
     async def _reconcile_open_trades(self):
         """
@@ -459,7 +498,7 @@ class TradingOrchestrator:
                 "WARN",
             )
 
-            exit_price, exit_reason = self._resolve_close_from_binance(trade)
+            exit_price, exit_reason, realized_pnl = self._resolve_close_from_binance(trade)
 
             # ── 3. Cancelar órdenes residuales ────────────────────────────────────
             try:
@@ -473,8 +512,10 @@ class TradingOrchestrator:
                 cycle=self._cycle,
                 exit_price=exit_price,
                 exit_reason=exit_reason,
+                realized_pnl=realized_pnl,
             )
             self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
+            self._verify_close_consistency(trade["id"], exit_reason, pnl)
 
             _log(
                 f"[Reconcile] Trade #{trade['id']} cerrado en DB: "
@@ -1365,13 +1406,16 @@ class TradingOrchestrator:
                 except Exception:
                     pass
 
-                exit_price, exit_reason = self._resolve_close_from_binance(trade)
-                pnl = self.store.close_trade(trade["id"], self._cycle, exit_price, exit_reason)
+                exit_price, exit_reason, realized_pnl = self._resolve_close_from_binance(trade)
+                pnl = self.store.close_trade(
+                    trade["id"], self._cycle, exit_price, exit_reason, realized_pnl=realized_pnl,
+                )
                 if self._active_trade_id == trade["id"]:
                     self._active_trade_id = None
                     self._sl_order_id = None
                 if self.risk.state.open_positions > 0:
                     self.risk.state.open_positions -= 1
+                self._verify_close_consistency(trade["id"], exit_reason, pnl)
                 await broadcast_position_update(None)
                 _log(
                     f"[CheckClosed] Trade #{trade['id']} cerrado: {exit_reason} "
@@ -1898,10 +1942,11 @@ class TradingOrchestrator:
             self.futures.cancel_all_orders(TRADING_UNIVERSE[0])
         except Exception:
             pass
-        exit_price, exit_reason = self._resolve_close_from_binance(active)
+        exit_price, exit_reason, realized_pnl = self._resolve_close_from_binance(active)
         pnl = self.store.close_trade(
-            self._active_trade_id, self._cycle, exit_price, exit_reason,
+            self._active_trade_id, self._cycle, exit_price, exit_reason, realized_pnl=realized_pnl,
         )
+        self._verify_close_consistency(active["id"], exit_reason, pnl)
         self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
         self._active_trade_id = None
         self._sl_order_id = None
