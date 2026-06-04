@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  ScatterChart, Scatter, Cell, XAxis, YAxis, Tooltip,
+  LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { Info } from "lucide-react";
@@ -226,6 +226,19 @@ function PnLTooltip({ active, payload }: PnLTooltipProps) {
   );
 }
 
+// Dot for the cumulative line — green if that trade won, red if it lost.
+interface PnLDotProps {
+  cx?: number;
+  cy?: number;
+  payload?: PnLPoint;
+}
+
+function PnLDot({ cx, cy, payload }: PnLDotProps) {
+  if (cx == null || cy == null || !payload) return null;
+  const color = payload.pnl >= 0 ? "#22d27a" : "#f05060";
+  return <circle cx={cx} cy={cy} r={3.5} fill={color} stroke="#0a0a14" strokeWidth={1} />;
+}
+
 export function PnLChart() {
   const [points, setPoints] = useState<PnLPoint[]>([]);
   const [totalPnl, setTotalPnl] = useState(0);
@@ -271,17 +284,21 @@ export function PnLChart() {
                 Cumulative
               </p>
               <ResponsiveContainer width="100%" height={100}>
-                <ScatterChart data={points} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
+                <LineChart data={points} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
                   <XAxis dataKey="id" type="number" domain={["dataMin", "dataMax"]} hide />
                   <YAxis dataKey="cumulative_pnl" type="number" domain={["auto", "auto"]} hide />
                   <ReferenceLine y={0} stroke="rgba(255,255,255,0.1)" strokeDasharray="3 3" />
                   <Tooltip cursor={{ stroke: "rgba(255,255,255,0.15)" }} content={<PnLTooltip />} />
-                  <Scatter data={points} fill={cumulColor}>
-                    {points.map((p) => (
-                      <Cell key={p.id} fill={p.pnl >= 0 ? "#22d27a" : "#f05060"} />
-                    ))}
-                  </Scatter>
-                </ScatterChart>
+                  <Line
+                    type="monotone"
+                    dataKey="cumulative_pnl"
+                    stroke={cumulColor}
+                    strokeWidth={2}
+                    dot={<PnLDot />}
+                    activeDot={{ r: 5, strokeWidth: 0 }}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
               </ResponsiveContainer>
             </div>
 
