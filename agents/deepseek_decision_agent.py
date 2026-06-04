@@ -222,6 +222,9 @@ Portfolio and memory:
 Lessons learned from past trades (real post-mortems of YOUR OWN closed trades — weigh them when a similar setup appears):
 {context.get('lessons') or '  (none yet)'}
 
+Recent auditor vetoes (signals you proposed that the independent risk auditor BLOCKED before execution — do NOT re-propose the same flawed setup; either adjust the thesis or HOLD until conditions change):
+{context.get('audit_vetoes') or '  (none)'}
+
 Decision rules:
 - BUY when the long setup has a reasonable directional lean (confluence among trend/EMA alignment,
   MACD, RSI) and room to TP before major resistance. You do NOT need a textbook-perfect edge —
@@ -229,6 +232,11 @@ Decision rules:
 - SELL when the short setup has a reasonable directional lean and room to TP before major support.
 - HOLD only when signals genuinely conflict (e.g. trend up but momentum down at resistance) or there
   is no room to the target. Do not HOLD just because the move is not "obvious".
+- Do NOT open SHORT when the move is already exhausted to the downside — i.e. RSI below ~35 (oversold)
+  OR price sitting at/just above the lower Bollinger band — unless there is clear room to the TP before
+  support. Symmetrically, do NOT open LONG when RSI is above ~65 OR price is at/just below the upper band
+  without clear room to resistance. Chasing an exhausted move leaves no room for the 2.5% TP and invites a
+  mean-reversion squeeze (especially with crowded funding). Prefer HOLD or wait for a pullback.
 - Conviction below 0.58 should be HOLD.
 - "confidence" is your REAL probability that the trade reaches TP before SL (for BUY/SELL),
   or how strongly you would avoid trading (for HOLD). Use the full 0.0-1.0 range and report

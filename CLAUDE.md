@@ -20,8 +20,8 @@ npm run dev
 ## Arquitectura
 
 ```
-core/orchestrator.py      ← Punto de entrada. asyncio.gather de 5 loops:
-  │                          API + News + Trading + Reconnect + PositionMonitor
+core/orchestrator.py      ← Punto de entrada. asyncio.gather de 6 loops:
+  │                          API + News + Trading + Reconnect + PositionMonitor + MarketRefresh
   ├── agents/
   │     deepseek_decision_agent.py  PRIMARIO (modo DEEPSEEK_SINGLE) — decisión única en JSON
   │     claude_audit_agent.py       Auditor — revisa toda señal BUY/SELL antes de ejecutar (fail-open)
@@ -42,10 +42,10 @@ core/orchestrator.py      ← Punto de entrada. asyncio.gather de 5 loops:
 
 ## Flujo de decisión (modo DEEPSEEK_SINGLE)
 
-1. Cada `ANALYSIS_INTERVAL_SECONDS` (15 min) el trading loop arma el contexto (mercado, derivados, noticias, historial de trades, posición activa).
+1. Cada `ANALYSIS_INTERVAL_SECONDS` (15 min) el trading loop arma el contexto (mercado, derivados, noticias, historial de trades, posición activa **y los vetos recientes del auditor** — `get_gate_rejections_summary` — para que DeepSeek no reproponga señales ya bloqueadas).
 2. **Dentro del horario de trading** llama a `DeepSeekDecisionAgent.analyze()` → devuelve JSON `{vote, confidence, reasoning, ...}`.
 3. Si `confidence >= MIN_CONVICTION` y vote es BUY/SELL, el **auditor Claude** revisa la señal y la aprueba o bloquea (veto unidireccional). Si el auditor falla o se queda sin tokens, **fail-open**: el trade pasa.
-4. `RiskManager.validate_futures_order()` valida tamaño, liquidación, pérdida diaria y máximo de posiciones. **El modelo nunca dimensiona la orden ni fija SL/TP — eso es código.**
+4. `RiskManager.validate_futures_order()` valida tamaño, liquidación, reward:risk, pérdida diaria y máximo de posiciones. **El modelo nunca dimensiona la orden ni fija SL/TP — eso es código.**
 5. Se abre la posición con SL/TP automáticos; el PositionMonitor la gestiona 24/7.
 
 ### Si se pide a Claude un análisis de trading
@@ -65,7 +65,9 @@ Responder ÚNICAMENTE con JSON válido:
 - Límite de pérdida diaria: configurable vía `FUTURES_MAX_DAILY_LOSS_PCT` (**0 = desactivado**, valor actual — solo aplica el hard stop acumulado).
 - **Máximo 1 posición de futures abierta a la vez.**
 - Tamaño de posición: escala de `MIN_POSITION_USDT` ($450) a `MAX_POSITION_USDT` ($600) según convicción. El margen requerido (`notional/leverage`) debe caber en `MAX_POSITION_SIZE_PERCENT` del budget (25% → cap $250).
-- Stop-loss: **−1.5%** | Take-profit: **+2.5%** | Leverage: **3x**.
+- Stop-loss: **−1.5%** (fijo; el trailing lo ajusta si el precio avanza a favor) | Leverage: **3x**.
+- **Take-profit adaptativo** (`calculate_adaptive_tp`): apunta al soporte/resistencia más cercano (banda de Bollinger), acotado a **[1.5%, 4%]**. Si no hay banda válida, cae al 2.5% fijo.
+- **Gate reward:risk** (`MIN_REWARD_RISK`, 1.2): el TP debe ofrecer al menos 1.2× la distancia del SL, o se bloquea. Codifica el veto del auditor a "shorts sin espacio al objetivo".
 - La liquidación debe quedar al menos 2× más lejos que el SL, o se bloquea.
 - **Hard stop**: si la pérdida acumulada alcanza `MAX_TRADING_LOSS_USDT` ($700 = 70% del budget), se suspende el trading. Se reactiva solo cuando se detecta un reset manual del balance del testnet (~$5.000).
 

@@ -99,6 +99,7 @@ TRADING_HOURS_START   = int(os.getenv("TRADING_HOURS_START", "8"))
 TRADING_HOURS_END     = int(os.getenv("TRADING_HOURS_END", "20"))
 TRADING_TIMEZONE      = os.getenv("TRADING_TIMEZONE", "UTC")
 OFF_HOURS_RECHECK     = 300   # re-chequear cada 5 min cuando estamos fuera de horario
+MARKET_REFRESH        = int(os.getenv("MARKET_REFRESH_SECONDS", "30"))   # refresco de precio/indicadores para el dashboard (24/7)
 
 # Trailing stop — solo activo en modo FUTURES
 TRAIL_ACTIVATION_PCT = 0.008   # precio debe moverse +0.8% a favor antes de activar
@@ -1224,6 +1225,14 @@ class TradingOrchestrator:
         except Exception as e:
             _log(f"[Context] Lecciones no disponibles: {e}", "WARN")
 
+        # Vetos recientes del auditor — cierra el loop de feedback para que el decisor
+        # NO vuelva a proponer la misma señal que Claude ya rechazó (y por qué).
+        audit_vetoes_str = ""
+        try:
+            audit_vetoes_str = self.store.get_gate_rejections_summary(limit=5)
+        except Exception as e:
+            _log(f"[Context] Vetos del auditor no disponibles: {e}", "WARN")
+
         ctx: dict = {
             "news_sentiment":       news_ctx.get("overall_sentiment", 0.0),
             "news_impact":          news_ctx.get("market_impact", "LOW"),
@@ -1246,6 +1255,7 @@ class TradingOrchestrator:
             "agent_performance":    agent_perf_str,
             "system_events":        system_events_str,
             "lessons":              lessons_str,
+            "audit_vetoes":         audit_vetoes_str,
             "portfolio_balance":    f"{balance:.2f}",
             "open_positions":       self.risk.state.open_positions,
             "daily_pnl":            f"{-self.risk.state.daily_loss:+.2f}{pnl_context}",
@@ -1418,13 +1428,13 @@ class TradingOrchestrator:
         price = market_data["price"]
 
         if self.trading_mode == "FUTURES":
-            await self._execute_futures_order(symbol, side, score, price, balance, signals)
+            await self._execute_futures_order(symbol, side, score, price, market_data, balance, signals)
         else:
             await self._execute_spot_order(symbol, side, score, price, market_data, balance, signals)
 
     async def _execute_futures_order(
         self, symbol: str, decision: str, score: float,
-        price: float, balance: float, signals: list,
+        price: float, market_data: dict, balance: float, signals: list,
     ):
         # Una sola posición activa a la vez
         if self._active_trade_id is not None:
@@ -1453,17 +1463,21 @@ class TradingOrchestrator:
             _log(f"[Futures] Gate-check BLOQUEÓ {side} score={score:.3f}", "WARN")
             return
 
-        # Calcular precios
+        # Calcular precios — TP adaptativo al soporte/resistencia (banda de Bollinger),
+        # SL fijo 1.5% (el trailing stop lo ajusta luego si el precio avanza a favor).
         sl  = self.futures.calculate_sl(side, price)
-        tp  = self.futures.calculate_tp(side, price)
+        tp  = self.futures.calculate_adaptive_tp(side, price, market_data)
         liq = self.futures.calculate_liquidation_price(side, price, FUTURES_LEVERAGE)
         margin = self.futures.calculate_margin(price, qty, FUTURES_LEVERAGE)
+
+        # Recorrido real al TP (para el gate de reward:risk del RiskManager).
+        tp_pct = abs(price - tp) / price if price > 0 else 0.025
 
         # Validación de riesgo futures
         order_req = OrderRequest(
             symbol=symbol, side=side, quantity=qty,
             price=price, confidence=score,
-            stop_loss_pct=0.015, take_profit_pct=0.025,
+            stop_loss_pct=0.015, take_profit_pct=tp_pct,
         )
         approved, reason = self.risk.validate_futures_order(order_req, FUTURES_LEVERAGE, liq)
         if not approved:
@@ -1672,6 +1686,24 @@ class TradingOrchestrator:
             await broadcast_portfolio(balance, self._effective_budget(), budget_pnl, budget_pnl_pct)
         except Exception as e:
             _log(f"[Idle] Error actualizando portfolio: {e}", "WARN")
+
+    # ── Market refresh loop ───────────────────────────────────────────────────
+
+    async def run_market_refresh_loop(self):
+        """
+        Refresca precio + indicadores para el dashboard cada MARKET_REFRESH segundos, 24/7.
+        Independiente del ciclo de decisión (15 min) y del horario: solo consulta Binance
+        (sin LLM, sin costo) y actualiza el caché que sirve GET /market. El navegador
+        hace polling cada 30s, así que la gráfica de precio queda casi en tiempo real.
+        """
+        _log(f"Market refresh loop iniciado (cada {MARKET_REFRESH}s).", "INFO")
+        while True:
+            try:
+                for sym in self._pick_symbols():
+                    app_state.setdefault("market_data", {})[sym] = self._client.get_market_data(sym)
+            except Exception as e:
+                _log(f"[MarketRefresh] Error refrescando market data: {e}", "WARN")
+            await asyncio.sleep(MARKET_REFRESH)
 
     # ── Reconnect loop ────────────────────────────────────────────────────────
 
@@ -2175,13 +2207,14 @@ class TradingOrchestrator:
             _log(f"Error en primer ciclo de noticias: {e}", "WARN")
 
         # Lanzar el resto de loops (api_task ya está corriendo)
-        _log("Iniciando loops paralelos: News + Trading + Reconnect + Monitor", "OK")
+        _log("Iniciando loops paralelos: News + Trading + Reconnect + Monitor + MarketRefresh", "OK")
         tasks = [
             api_task,
             asyncio.create_task(self.run_news_loop()),
             asyncio.create_task(self.run_trading_loop()),
             asyncio.create_task(self.run_reconnect_loop()),
             asyncio.create_task(self.run_position_monitor_loop()),
+            asyncio.create_task(self.run_market_refresh_loop()),
         ]
         try:
             await asyncio.gather(*tasks)

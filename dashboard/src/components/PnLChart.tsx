@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip,
+  ScatterChart, Scatter, Cell, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { Info } from "lucide-react";
@@ -271,27 +271,17 @@ export function PnLChart() {
                 Cumulative
               </p>
               <ResponsiveContainer width="100%" height={100}>
-                <AreaChart data={points} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor={cumulColor} stopOpacity={0.3} />
-                      <stop offset="95%" stopColor={cumulColor} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="id" hide />
-                  <YAxis hide domain={["auto", "auto"]} />
+                <ScatterChart data={points} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
+                  <XAxis dataKey="id" type="number" domain={["dataMin", "dataMax"]} hide />
+                  <YAxis dataKey="cumulative_pnl" type="number" domain={["auto", "auto"]} hide />
                   <ReferenceLine y={0} stroke="rgba(255,255,255,0.1)" strokeDasharray="3 3" />
-                  <Tooltip content={<PnLTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="cumulative_pnl"
-                    stroke={cumulColor}
-                    strokeWidth={2}
-                    fill="url(#pnlGrad)"
-                    dot={false}
-                    activeDot={{ r: 3, fill: cumulColor }}
-                  />
-                </AreaChart>
+                  <Tooltip cursor={{ stroke: "rgba(255,255,255,0.15)" }} content={<PnLTooltip />} />
+                  <Scatter data={points} fill={cumulColor}>
+                    {points.map((p) => (
+                      <Cell key={p.id} fill={p.pnl >= 0 ? "#22d27a" : "#f05060"} />
+                    ))}
+                  </Scatter>
+                </ScatterChart>
               </ResponsiveContainer>
             </div>
 

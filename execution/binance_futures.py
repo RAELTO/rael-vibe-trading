@@ -412,6 +412,33 @@ class BinanceFuturesClient:
             return self._round_price("BTCUSDT", price * (1 + pct))
         return self._round_price("BTCUSDT", price * (1 - pct))
 
+    def calculate_adaptive_tp(
+        self, side: str, price: float, market_data: dict,
+        min_pct: float = 0.015, max_pct: float = 0.04, fixed_pct: float = 0.025,
+    ) -> float:
+        """
+        TP adaptativo: en vez de un 2.5% ciego, apunta al soporte/resistencia más cercano
+        (banda de Bollinger) acotando el recorrido a [min_pct, max_pct].
+          - LONG  -> objetivo = banda superior (resistencia)
+          - SHORT -> objetivo = banda inferior (soporte)
+        Si entras pegado a la banda, el recorrido real es ínfimo: se acota al piso (min_pct)
+        y el gate de reward:risk del RiskManager bloquea el trade por falta de espacio.
+        Si no hay banda válida, cae al fixed_pct (2.5%).
+        """
+        band = market_data.get("bb_upper") if side == "LONG" else market_data.get("bb_lower")
+        if not band or band <= 0:
+            return self.calculate_tp(side, price, fixed_pct)
+
+        # Recorrido implícito hasta la banda en la dirección del beneficio.
+        reward_pct = (band - price) / price if side == "LONG" else (price - band) / price
+        if reward_pct <= 0:            # banda del lado equivocado (precio ya la cruzó) -> usar fijo
+            reward_pct = fixed_pct
+        reward_pct = max(min_pct, min(max_pct, reward_pct))
+
+        if side == "LONG":
+            return self._round_price("BTCUSDT", price * (1 + reward_pct))
+        return self._round_price("BTCUSDT", price * (1 - reward_pct))
+
     # ── Precision helpers ─────────────────────────────────────────────────────
 
     def _get_symbol_info(self, symbol: str) -> dict:

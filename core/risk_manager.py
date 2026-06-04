@@ -36,6 +36,8 @@ class RiskManager:
         # Límite de pérdida diaria en futures. 0 = desactivado (solo aplica el hard stop acumulado).
         self.futures_daily_loss_pct = float(os.getenv("FUTURES_MAX_DAILY_LOSS_PCT", "0")) / 100
         self.min_consensus     = float(os.getenv("MIN_CONSENSUS_SCORE", "0.65"))
+        # Reward:risk mínimo (TP_dist / SL_dist). Bloquea entradas sin espacio al objetivo.
+        self.min_reward_risk   = float(os.getenv("MIN_REWARD_RISK", "1.2"))
         self.demo_budget       = float(os.getenv("TRADING_BUDGET_USDT", "1000.0"))  # presupuesto operativo
         self.max_open_positions = 3
         self.state = RiskState(portfolio_balance=self.demo_budget)
@@ -162,6 +164,17 @@ class RiskManager:
                 f"Liquidation too close: liq=${liquidation_price:,.0f} "
                 f"({liq_distance:.0f} away) vs SL distance {sl_distance:.0f}×2"
             )
+
+        # Reward:risk — el TP (adaptativo al soporte/resistencia) debe ofrecer suficiente
+        # recorrido frente al SL. Bloquea entradas pegadas a la banda donde no hay espacio.
+        if order.stop_loss_pct > 0:
+            reward_risk = order.take_profit_pct / order.stop_loss_pct
+            if reward_risk < self.min_reward_risk:
+                return False, (
+                    f"Reward:risk too low: {reward_risk:.2f} < {self.min_reward_risk:.2f} "
+                    f"(TP {order.take_profit_pct*100:.2f}% vs SL {order.stop_loss_pct*100:.2f}% — "
+                    f"no room to target before support/resistance)"
+                )
 
         return True, "OK"
 

@@ -361,6 +361,22 @@ class StateStore:
                 ),
             )
 
+    def get_recent_gate_rejections(self, limit: int = 5) -> list[dict]:
+        """Vetos recientes del auditor (approved=0), más reciente primero."""
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT ts, symbol, reason FROM gate_results WHERE approved=0 ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_gate_rejections_summary(self, limit: int = 5) -> str:
+        """Resumen de los vetos recientes del auditor para retroalimentar al decisor."""
+        rows = self.get_recent_gate_rejections(limit)
+        if not rows:
+            return ""
+        return "\n".join(f"  - {r['symbol']}: {r['reason']}" for r in rows)
+
     # ── Risk State ────────────────────────────────────────────────────────────
 
     def save_risk_state(self, daily_loss: float, open_positions: int, balance: float):
