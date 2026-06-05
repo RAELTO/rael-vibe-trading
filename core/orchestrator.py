@@ -1542,19 +1542,34 @@ class TradingOrchestrator:
             )
 
             # Colocar SL/TP automáticos y guardar SL order ID para trailing.
-            # NOTA: si la Algo API rechaza las órdenes condicionales, place_* devuelve {}
-            # (no lanza). En ese caso la posición queda sin protección en Binance y la
-            # red de seguridad del PositionMonitor (_enforce_tp_sl) cierra a mercado.
+            # place_* intenta primero la orden condicional nativa por el cliente testnet
+            # (no geo-bloqueado) y, si falla, la Algo API. Si ambas fallan devuelve {} (no
+            # lanza): la posición queda SIN protección en Binance y solo la cubre la red del
+            # PositionMonitor (_enforce_tp_sl) — situación que avisamos al dashboard.
             try:
                 sl_result = self.futures.place_stop_loss(symbol, side, sl)
                 self._sl_order_id = sl_result.get("order_id")
                 tp_result = self.futures.place_take_profit(symbol, side, tp)
-                if not sl_result.get("order_id"):
-                    _log(f"[Futures] SL no colocado en Binance — monitor lo hará cumplir.", "WARN")
-                if not tp_result.get("order_id"):
-                    _log(f"[Futures] TP no colocado en Binance — monitor lo hará cumplir.", "WARN")
+                sl_ok = bool(sl_result.get("order_id"))
+                tp_ok = bool(tp_result.get("order_id"))
+                if sl_ok and tp_ok:
+                    _log(
+                        f"[Futures] SL/TP colocados en Binance "
+                        f"(SL vía {sl_result.get('kind')}, TP vía {tp_result.get('kind')}).",
+                        "OK",
+                    )
+                else:
+                    missing = "/".join(m for m, ok in (("SL", sl_ok), ("TP", tp_ok)) if not ok)
+                    warn = (
+                        f"⚠ {missing} NO colocado(s) en Binance — la posición queda protegida "
+                        f"SOLO por el PositionMonitor (revisa cada {POSITION_MONITOR}s, sin orden "
+                        f"en el exchange). Revisa los logs [Futures] para la causa."
+                    )
+                    _log(f"[Futures] {warn}", "WARN")
+                    await broadcast_error(warn)
             except Exception as e:
                 _log(f"[Futures] SL/TP placement error: {e}", "WARN")
+                await broadcast_error(f"SL/TP placement error: {e}")
 
             self.risk.open_position()
             await broadcast_order(symbol, side, qty, fill_price, sl, tp)

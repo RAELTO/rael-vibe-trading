@@ -223,42 +223,81 @@ class BinanceFuturesClient:
         return {"order_id": order["orderId"], "status": order["status"]}
 
     def place_stop_loss(self, symbol: str, position_side: str, stop_price: float) -> dict:
-        """
-        Stop-loss condicional via Algo API (POST /fapi/v1/algoOrder).
-        Reemplaza STOP_MARKET en /fapi/v1/order, eliminado en dic-2025 (error -4120).
-        """
+        """Coloca el stop-loss de cierre. Ver _place_protective."""
         side = "SELL" if position_side == "LONG" else "BUY"
         stop_price = self._round_price(symbol, stop_price)
-        try:
-            data = self._place_algo_order(symbol, side, "STOP_MARKET", stop_price)
-            algo_id = data.get("algoId") or (data.get("data") or {}).get("algoId")
-            return {"order_id": algo_id, "stop_price": stop_price}
-        except Exception as e:
-            print(f"[Futures] SL error: {e}")
-            return {}
+        return self._place_protective(symbol, side, "STOP_MARKET", stop_price, "SL")
 
     def place_take_profit(self, symbol: str, position_side: str, tp_price: float) -> dict:
-        """
-        Take-profit condicional via Algo API (POST /fapi/v1/algoOrder).
-        Reemplaza TAKE_PROFIT_MARKET en /fapi/v1/order, eliminado en dic-2025.
-        """
+        """Coloca el take-profit de cierre. Ver _place_protective."""
         side = "SELL" if position_side == "LONG" else "BUY"
         tp_price = self._round_price(symbol, tp_price)
+        return self._place_protective(symbol, side, "TAKE_PROFIT_MARKET", tp_price, "TP")
+
+    def _place_protective(
+        self, symbol: str, side: str, order_type: str, trigger_price: float, kind: str,
+    ) -> dict:
+        """
+        Coloca una orden condicional de cierre (SL/TP) en EL MISMO entorno donde vive la
+        posición — el cliente testnet firmado (testnet.binancefuture.com) — y NO en
+        demo-fapi.binance.com, que está geo-bloqueado desde el VPS:
+            "Service unavailable from a restricted location according to 'b. Eligibility'".
+
+        Cascada; devuelve el primer método que Binance acepte (con su `order_id`):
+          1. STOP_MARKET / TAKE_PROFIT_MARKET con closePosition=true por el cliente testnet.
+             Es la forma canónica en modo one-way (open_position no usa positionSide) y va
+             por un host que NO aplica el chequeo de elegibilidad → es la ruta preferida.
+          2. Algo condicional en demo-fapi como último recurso (funciona desde ubicaciones
+             no restringidas; desde un VPS bloqueado fallará y se cae al return {}).
+
+        Devuelve {} solo si TODO falla. En ese caso la única protección es la red del
+        PositionMonitor (_enforce_tp_sl) y el orquestador lo avisa al dashboard.
+        """
+        # Método 1 — orden condicional nativa por el cliente testnet (no geo-bloqueado).
         try:
-            data = self._place_algo_order(symbol, side, "TAKE_PROFIT_MARKET", tp_price)
-            algo_id = data.get("algoId") or (data.get("data") or {}).get("algoId")
-            return {"order_id": algo_id, "tp_price": tp_price}
+            order = self.client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=order_type,
+                stopPrice=trigger_price,
+                closePosition=True,
+                workingType="MARK_PRICE",
+            )
+            oid = order.get("orderId")
+            if oid:
+                return {"order_id": oid, "trigger_price": trigger_price, "kind": "order"}
         except Exception as e:
-            print(f"[Futures] TP error: {e}")
-            return {}
+            print(f"[Futures] {kind} {order_type} (cliente testnet) rechazado: {e}")
+
+        # Método 2 — Algo condicional en demo-fapi (fallback; geo-bloqueado en este VPS).
+        try:
+            data = self._place_algo_order(symbol, side, order_type, trigger_price)
+            algo_id = data.get("algoId") or (data.get("data") or {}).get("algoId")
+            if algo_id:
+                return {"order_id": algo_id, "trigger_price": trigger_price, "kind": "algo"}
+        except Exception as e:
+            print(f"[Futures] {kind} algo (demo-fapi) rechazado: {e}")
+
+        return {}
 
     def cancel_order(self, symbol: str, order_id: int) -> bool:
-        """Cancela una orden algo condicional por algoId (trailing stop update)."""
+        """
+        Cancela una orden de cierre (SL/TP) por id — usado por el trailing stop.
+        Soporta ambas vías de _place_protective: primero intenta como orden condicional
+        regular (futures_cancel_order) y, si no, como orden algo (futures_cancel_algo_order).
+        """
+        if order_id is None:
+            return False
+        try:
+            self.client.futures_cancel_order(symbol=symbol, orderId=order_id)
+            return True
+        except Exception:
+            pass
         try:
             self.client.futures_cancel_algo_order(algoId=order_id)
             return True
-        except BinanceAPIException as e:
-            print(f"[Futures] cancel_algo_order error: {e}")
+        except Exception as e:
+            print(f"[Futures] cancel_order error: {e}")
             return False
 
     def cancel_all_orders(self, symbol: str):
