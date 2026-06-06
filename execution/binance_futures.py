@@ -264,10 +264,17 @@ class BinanceFuturesClient:
                 workingType="MARK_PRICE",
             )
             oid = order.get("orderId")
+            if not oid:
+                # CONFIRMADO en prod: la orden de cierre con closePosition SÍ se coloca en el
+                # exchange (Open Orders la muestra) pero la respuesta a veces vuelve sin
+                # orderId. Lo recuperamos consultando las órdenes abiertas para (a) no caer al
+                # fallback geo-bloqueado y (b) no dejar el order_id en None (rompe el trailing).
+                print(f"[Futures] {kind} {order_type} (cliente testnet) sin orderId en respuesta: {order!r} — recuperando del exchange", flush=True)
+                oid = self._find_protective_order_id(symbol, side, order_type)
             if oid:
                 return {"order_id": oid, "trigger_price": trigger_price, "kind": "order"}
         except Exception as e:
-            print(f"[Futures] {kind} {order_type} (cliente testnet) rechazado: {e}")
+            print(f"[Futures] {kind} {order_type} (cliente testnet) rechazado: {type(e).__name__}: {e}", flush=True)
 
         # Método 2 — Algo condicional en demo-fapi (fallback; geo-bloqueado en este VPS).
         try:
@@ -276,9 +283,33 @@ class BinanceFuturesClient:
             if algo_id:
                 return {"order_id": algo_id, "trigger_price": trigger_price, "kind": "algo"}
         except Exception as e:
-            print(f"[Futures] {kind} algo (demo-fapi) rechazado: {e}")
+            print(f"[Futures] {kind} algo (demo-fapi) rechazado: {e}", flush=True)
 
         return {}
+
+    def get_open_orders(self, symbol: str) -> list:
+        """
+        Órdenes abiertas del símbolo — incluye las condicionales de cierre
+        (STOP_MARKET / TAKE_PROFIT_MARKET). Fuente de verdad para verificar si el
+        SL/TP quedó realmente colocado, independientemente del valor de retorno de
+        _place_protective.
+        """
+        try:
+            return self.client.futures_get_open_orders(symbol=symbol) or []
+        except Exception as e:
+            print(f"[Futures] get_open_orders error: {e}", flush=True)
+            return []
+
+    def _find_protective_order_id(self, symbol: str, side: str, order_type: str):
+        """
+        Recupera el orderId de una condicional de cierre recién colocada cuando
+        futures_create_order no lo devolvió. STOP_MARKET vs TAKE_PROFIT_MARKET
+        distingue SL de TP; el lado (BUY para short, SELL para long) coincide en ambos.
+        """
+        for o in self.get_open_orders(symbol):
+            if o.get("type") == order_type and o.get("side") == side:
+                return o.get("orderId")
+        return None
 
     def cancel_order(self, symbol: str, order_id: int) -> bool:
         """

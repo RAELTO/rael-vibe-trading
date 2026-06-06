@@ -1552,6 +1552,15 @@ class TradingOrchestrator:
                 tp_result = self.futures.place_take_profit(symbol, side, tp)
                 sl_ok = bool(sl_result.get("order_id"))
                 tp_ok = bool(tp_result.get("order_id"))
+                # Verificación contra el exchange (fuente de verdad): el valor de retorno
+                # puede no traer orderId aunque la orden sí haya entrado. Solo consultamos
+                # si falta confirmar alguna, para no añadir latencia cuando ambas están OK.
+                if not (sl_ok and tp_ok):
+                    open_types = {o.get("type") for o in self.futures.get_open_orders(symbol)}
+                    if not sl_ok and "STOP_MARKET" in open_types:
+                        sl_ok = True
+                    if not tp_ok and "TAKE_PROFIT_MARKET" in open_types:
+                        tp_ok = True
                 if sl_ok and tp_ok:
                     _log(
                         f"[Futures] SL/TP colocados en Binance "
