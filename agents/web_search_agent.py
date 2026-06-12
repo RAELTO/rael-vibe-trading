@@ -24,10 +24,24 @@ class WebSearchAgent:
         self.memory = memory_client
         self.client = llm_client or OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = os.getenv("NEWS_SEARCH_MODEL", "gpt-4o-mini-search-preview")
-        self.fallback_model = os.getenv("NEWS_SEARCH_FALLBACK_MODEL", "gpt-4o-mini-search-preview")
         self.latest_context = {}
         self.interval_seconds = int(os.getenv("NEWS_INTERVAL_SECONDS", 10800))
         self.max_searches = int(os.getenv("NEWS_SEARCH_MAX_USES", 8))
+
+        # Fallback: MiMo vía OpenRouter con búsqueda web `:online` (Exa) — se usa SOLO si la
+        # ruta primaria de OpenAI falla (típicamente: se agotan los créditos de la cuenta).
+        # La búsqueda la hace OpenRouter server-side (no es capacidad nativa de MiMo).
+        # Reusa OPENROUTER_API_KEY si no hay una llave dedicada; sin llave, el fallback se desactiva.
+        self.fallback_model = os.getenv("NEWS_SEARCH_FALLBACK_MODEL", "xiaomi/mimo-v2.5-pro:online")
+        # MiMo es un modelo de razonamiento: el "thinking" varía 1.4k-2.6k tokens por llamada y debe
+        # caber JUNTO con el JSON o el content vuelve vacío (truncado). El cap alto no cuesta de más
+        # (solo se facturan los tokens generados); solo evita el truncamiento. 5000 deja margen amplio.
+        self.fallback_max_tokens = int(os.getenv("NEWS_FALLBACK_MAX_TOKENS", "5000"))
+        fallback_key = os.getenv("NEWS_FALLBACK_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        fallback_base_url = os.getenv("NEWS_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1")
+        self.fallback_client = (
+            OpenAI(api_key=fallback_key, base_url=fallback_base_url) if fallback_key else None
+        )
 
     def analyze_with_gpt_search(self) -> dict:
         prompt = f"""You are a macro, regulatory and on-chain risk analyst for a Bitcoin futures (BTCUSDT) daytrading system.
@@ -107,13 +121,19 @@ Rules:
             )
             return self._parse_context(response.output_text)
         except Exception as e:
-            print(f"[WebSearchAgent] Error en GPT web search ({self.model}): {e}")
-            if self.fallback_model and self.fallback_model != self.model:
+            print(f"[WebSearchAgent] Error en GPT web search ({self.model}): {e}", flush=True)
+            if self.fallback_client:
                 try:
-                    print(f"[WebSearchAgent] Reintentando con fallback {self.fallback_model}")
-                    return self._analyze_with_chat_search(self.fallback_model, prompt)
+                    print(f"[WebSearchAgent] Fallback -> OpenRouter {self.fallback_model}", flush=True)
+                    return self._analyze_with_openrouter_search(prompt)
                 except Exception as e2:
-                    print(f"[WebSearchAgent] Fallback GPT web search failed: {e2}")
+                    print(f"[WebSearchAgent] Fallback OpenRouter falló: {e2}", flush=True)
+            else:
+                print(
+                    "[WebSearchAgent] Sin fallback configurado "
+                    "(falta NEWS_FALLBACK_API_KEY / OPENROUTER_API_KEY)",
+                    flush=True,
+                )
             return self._default_context()
 
     def _analyze_with_chat_search(self, model: str, prompt: str) -> dict:
@@ -121,6 +141,25 @@ Rules:
             model=model,
             web_search_options={},
             max_tokens=1200,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Respond only with valid JSON. Do not wrap it in markdown.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return self._parse_context(response.choices[0].message.content)
+
+    def _analyze_with_openrouter_search(self, prompt: str) -> dict:
+        """
+        Fallback de búsqueda de noticias vía OpenRouter. El sufijo `:online` del modelo
+        activa la búsqueda web (Exa) server-side: OpenRouter busca, inyecta los resultados
+        en el prompt y MiMo redacta el JSON. NO usa `web_search_options` (eso es de OpenAI).
+        """
+        response = self.fallback_client.chat.completions.create(
+            model=self.fallback_model,
+            max_tokens=self.fallback_max_tokens,
             messages=[
                 {
                     "role": "system",
