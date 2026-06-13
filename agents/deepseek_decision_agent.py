@@ -38,6 +38,10 @@ class DeepSeekDecisionAgent(BaseAgent):
             base_url="https://api.deepseek.com/v1",
         )
         self.model = os.getenv("DEEPSEEK_DECISION_MODEL", "deepseek-v4-pro")
+        # deepseek-v4-pro es un modelo de razonamiento: el "thinking" gasta 1.4k-4k tokens y debe
+        # caber JUNTO con el JSON o este se trunca (finish_reason=length) y el parse falla. El cap
+        # alto no cuesta de más (solo se facturan los tokens generados); solo evita el truncamiento.
+        self.max_tokens = int(os.getenv("DEEPSEEK_DECISION_MAX_TOKENS", "8000"))
 
     @staticmethod
     def _extract_json_object(text: str) -> str:
@@ -134,13 +138,14 @@ class DeepSeekDecisionAgent(BaseAgent):
             pass
 
     @staticmethod
-    def _log_bad_json(raw: str, error: Exception):
+    def _log_bad_json(raw: str, error: Exception, finish_reason: str | None = None):
         try:
             root = Path(__file__).resolve().parents[1]
             log_dir = root / "logs"
             log_dir.mkdir(exist_ok=True)
             with (log_dir / "deepseek_bad_json.log").open("a", encoding="utf-8") as f:
                 f.write(f"\n--- {datetime.now(timezone.utc).isoformat()} ---\n")
+                f.write(f"FINISH_REASON: {finish_reason}\n")
                 f.write(f"ERROR: {error}\n")
                 f.write(raw or "<empty>")
                 f.write("\n")
@@ -262,7 +267,7 @@ Respond only with JSON:
 
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4000,                          # holgura para que el JSON quepa tras cualquier razonamiento
+            max_tokens=self.max_tokens,                # cubre razonamiento + JSON; ver nota en __init__
             temperature=0.0,
             response_format={"type": "json_object"},  # fuerza salida JSON válida (DeepSeek lo soporta)
             messages=[
@@ -272,6 +277,7 @@ Respond only with JSON:
         )
 
         message = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
         raw_text = (message.content or "").strip()
         text = raw_text
         if not text:
@@ -281,7 +287,13 @@ Respond only with JSON:
         try:
             data = self._safe_json_loads(text)
         except Exception as e:
-            self._log_bad_json(raw_text, e)
+            if finish_reason == "length":
+                self.log(
+                    f"DeepSeek JSON truncado (finish_reason=length, max_tokens={self.max_tokens}) "
+                    f"— el razonamiento + JSON excedió el tope; sube DEEPSEEK_DECISION_MAX_TOKENS.",
+                    "WARN",
+                )
+            self._log_bad_json(raw_text, e, finish_reason)
             data = self._salvage_signal(raw_text)
             if not data:
                 preview = raw_text[:240].replace("\n", " ") if raw_text else "empty response"

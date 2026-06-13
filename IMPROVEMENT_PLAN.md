@@ -26,6 +26,8 @@ Prioridades: **P0** = corregir/medir antes de tocar nada más · **P1** = mayor 
 
 **Aceptación:** ningún trade cerrado en DB viola las reglas direccionales; las lecciones existentes contaminadas quedan excluidas del prompt.
 
+**✅ HECHO (código):** `_close_is_coherent` (helper puro: signo PnL + dirección entry→exit con tolerancia 0.1%); `_verify_close_consistency` ahora devuelve bool, registra `system_event` `CLOSE_INCOHERENT` y se llama con el `trade` + `exit_price` en los 3 cierres; guard en `_run_post_mortem` que NO genera lección si el cierre es incoherente. **Pendiente (VPS):** correr `python scripts/backfill_close_coherence.py --apply` contra la DB de producción para purgar lecciones ya contaminadas (dry-run por defecto). Nota: el root (TP con PnL<0) ya estaba mitigado al derivar `exit_reason` del signo del `realized_pnl`; esto añade la red direccional + la protección del loop de aprendizaje.
+
 ---
 
 ## P0.2 — Harness de evaluación contrafactual (shadow signals)
@@ -63,14 +65,20 @@ Prioridades: **P0** = corregir/medir antes de tocar nada más · **P1** = mayor 
 
 ---
 
-## P1.1 — DeepSeek: razonamiento en la decisión
+## P0.3 — ✅ HECHO: JSON truncado del decisor (reasoning + JSON > max_tokens)
 
-Hoy la decisión es una llamada greedy (`temperature=0.0`) en modo chat. A 96 ciclos/día el costo de habilitar thinking sigue siendo de centavos, y ponderar 6 dimensiones (técnicos, derivados, noticias, historial, lecciones, posición activa) es el caso de uso ideal de un modelo razonador.
+`deepseek-v4-pro` emite 1.4k–4k tokens de razonamiento; con `max_tokens=4000` el JSON se truncaba (`finish_reason=length`) → el parse fallaba → caía al salvage por regex. **Síntomas reales:** "Recovered from malformed DeepSeek JSON" frecuente, y votos direccionales sub-umbral rescatados de un JSON cortado que aparecían en el dashboard como LONG/SHORT pero **nunca se ejecutaban ni se bloqueaban** (el "LONG fantasma" de las 20:09). **Corregido:** `DEEPSEEK_DECISION_MAX_TOKENS=8000` (cap alto solo factura tokens generados) + `finish_reason` registrado en `_log_bad_json` para confirmar truncamiento en producción. La parte de transparencia ("por qué no se ejecutó") se aborda en P1.8.
+
+---
+
+## P1.1 — DeepSeek: exponer y ajustar el razonamiento (NO "habilitarlo": ya razona)
+
+**Corrección de premisa:** `deepseek-v4-pro` YA es un modelo de razonamiento. Cada decisión gasta 1.4k–4k `reasoning_tokens` internos aunque la llamada sea greedy (`temperature=0.0`) — confirmado en pruebas; de hecho el thinking ES la causa del JSON truncado de P0.3. O sea, no hay un "thinking" que prender: ya corre. Lo que falta es aprovecharlo y exponerlo. A ~48 decisiones/día (ventana de 12h) el costo es de centavos.
 
 **Implementación (`agents/deepseek_decision_agent.py`):**
-1. Hacerlo config-driven: probar la variante con razonamiento de DeepSeek (vía `DEEPSEEK_DECISION_MODEL`, p.ej. `deepseek-reasoner` o el toggle de thinking de v4-pro según lo que exponga la API al momento de implementar)(Usando un loader indicador en dashboard de que el modelo está pensando). El parser ya tolera `reasoning_content` (`deepseek_decision_agent.py:278`) y tiene salvage de JSON malformado — reutilizar tal cual.
-2. Subir `max_tokens` si hace falta para que el JSON quepa tras el thinking (mismo aprendizaje que con MiMo: el cap alto no cuesta de más, solo se facturan tokens generados).
-3. Validar con el shadow harness (P0.2): correr 1 semana el modelo razonador y comparar tasa TP-first por bucket contra la cohorte previa. **No adoptar a ciegas.**
+1. ✅ HECHO — `max_tokens` config-driven (`DEEPSEEK_DECISION_MAX_TOKENS=8000`) para que el JSON quepa tras el razonamiento, + log de `finish_reason` para detectar truncamiento. El parser ya tolera `reasoning_content` y tiene salvage de JSON malformado.
+2. Exponer en el dashboard un indicador de "pensando" mientras corre la decisión (loader) y, opcionalmente, persistir/mostrar un resumen del `reasoning_content` del ciclo.
+3. Si la API expone un control de effort/profundidad de razonamiento, hacerlo config-driven y validar con el shadow harness (P0.2): 1 semana, comparar tasa TP-first por bucket contra la cohorte previa. **No adoptar a ciegas.**
 
 ## P1.2 — DeepSeek: self-consistency en señales borderline
 
@@ -97,7 +105,7 @@ Decide cada 15 min con SL de 1.5% pero solo ve **50 velas de 1h** (`execution/bi
 
 **Implementación:**
 1. `get_market_data`: añadir un segundo fetch de klines `15m` (últimas ~64) y un resumen `4h` (solo OHLC de las últimas 12, para contexto de tendencia). Exponer como `closes_15m`, `highs_15m`, `lows_15m`, `summary_4h`.
-2. En el prompt, presentar las series **redondeadas** (precios BTC a enteros, volúmenes a 1 decimal) — las series actuales con floats completos queman cientos de tokens por ciclo sin aportar señal.
+2. **(Adelantable, independiente del resto de P1.4)** En el prompt, presentar las series **redondeadas** (precios BTC a enteros, volúmenes a 1 decimal) — las series actuales con floats completos queman cientos de tokens por ciclo sin aportar señal. Bonus: menos tokens de prompt = menos presión sobre el presupuesto del razonamiento = menor riesgo de truncamiento (P0.3). Vale la pena hacerlo ya.
 3. Calcular RSI/EMA también sobre 15m y etiquetar claramente cada timeframe en el prompt ("1H trend / 15M entry timing").
 4. Medir con shadow harness antes/después.
 
@@ -135,6 +143,17 @@ El SL fijo de 1.5% es estrecho cuando BTC se mueve 4% diario y holgado cuando se
 3. El gate `MIN_REWARD_RISK=1.2` queda intacto y sigue siendo el árbitro final.
 4. El trailing stop (`_check_trailing_stop`) debe leer el `sl_pct` real del trade (ya se persiste `sl_price` — verificar que no asuma 1.5% hardcodeado).
 
+## P1.8 — Observabilidad: por qué un voto NO se convirtió en trade
+
+Hoy el dashboard muestra el voto del decisor pero no el **veredicto final**. Un BUY/SELL puede no ejecutarse por (a) `conviction < MIN_CONVICTION` (`return` silencioso en `_run_single_decision_cycle`), (b) RiskManager (reward:risk, buffer de liquidación, max posiciones), (c) cooldown/gate estructural (P1.5/P1.6), o sí ejecutarse. Esa opacidad ya causó confusión real **dos veces** (el short bloqueado por reward:risk y el "LONG fantasma" de P0.3).
+
+**Implementación:**
+1. Definir un veredicto explícito por ciclo: `EXECUTED` / `SKIPPED_THRESHOLD` / `BLOCKED_RISK:<motivo>` / `VETOED` / `SKIPPED_OFF_HOURS`.
+2. En `_run_single_decision_cycle`: en cada punto de salida (el `return` por sub-umbral y el rechazo del RiskManager) emitir un `broadcast_*` con el veredicto + motivo, en vez de retornar en silencio.
+3. Dashboard: badge de veredicto en la tarjeta LAST DECISION y en cada fila de RECENT (verde ejecutado / ámbar skip / rojo bloqueado).
+
+Complementa el `blocked_reason` que P0.2 persiste en DB — esto es la versión **en vivo**. Barato y de alto valor para confiar/depurar.
+
 ---
 
 ## P2.1 — MiMo: segunda opinión barata en señales borderline
@@ -170,21 +189,9 @@ Hoy, si OpenAI se queda sin créditos y entra el fallback MiMo, solo se ve en la
 
 Producción es `DEEPSEEK_SINGLE` puro; todo lo demás es peso muerto que infla el orquestador y los deploys del VPS.
 
-**Eliminar (sin decisión pendiente):**
-| Qué | Dónde |
-|---|---|
-| Sub-repo Kronos completo | `Kronos/` |
-| Agente Kronos | `agents/kronos_agent.py` |
-| Agente local (Ollama) | `agents/local_agent.py` + import/instanciación en `core/orchestrator.py:35,160,234` |
-| Llamadas a `local_agent.gate_check` | `core/orchestrator.py:1505,1619` (ya bypassed en DEEPSEEK_SINGLE — eliminar la rama legacy) |
-| Agente Gemini | `agents/gemini_agent.py`, `tests/test_gemini.py` |
-| Pesos de kronos en el decider | `core/decider.py:21,34,45` |
-| Vars de entorno muertas | `.env.example`: `OLLAMA_BASE_URL`, `LOCAL_MODEL`, `GOOGLE_API_KEY`, `GEMINI_MODEL` |
-| Repo de referencia embebido | `Vibe-Trading/` (clon externo — borrar del repo o mover fuera) |
+**✅ HECHO — eliminado:** sub-repo `Kronos/` (submódulo) y `agents/kronos_agent.py`; agente local Ollama `agents/local_agent.py` + su import/instanciación + las dos ramas legacy de `local_agent.gate_check`; agente `agents/gemini_agent.py` + `tests/test_gemini.py`; pesos de kronos/local en `core/decider.py` (renormalizados los 4 cloud restantes a 1.0); repo embebido `Vibe-Trading/` (submódulo); vars muertas en `.env`/`.env.example` (`OLLAMA_BASE_URL`, `LOCAL_MODEL`, `GOOGLE_API_KEY`, `GEMINI_MODEL`); referencias en `tests/test_agents.py`, `tests/test_decider.py` y `CLAUDE.md`. **`mempalace` (submódulo) se conserva** porque sigue en uso.
 
-**Eliminar (recomendado, decisión explícita):** los modos legacy completos `ENSEMBLE` y `MULTI_AGENT` — `agents/{claude,qwen,deepseek,gpt}_agent.py`, `agents/{technical,sentiment,quant,synthesis,gate}_agent.py`, `core/decider.py`, y en el orquestador `_run_pipeline_cycle` + `_collect_votes` + el registro de esos agentes. El historial de git los preserva si algún día se quieren resucitar. Esto recorta `orchestrator.py` en varios cientos de líneas de un golpe.
-
-**Después de borrar:** depurar `requirements.txt` (torch/transformers si solo los usaba Kronos; verificar que pandas/numpy no se usen en otro lado), actualizar `CLAUDE.md` (árbol de arquitectura y sección de modos legacy) y los docs raíz obsoletos (`MULTI_AGENT_PLAN.md`).
+**Pendiente (recomendado, decisión explícita):** los modos legacy completos `ENSEMBLE` y `MULTI_AGENT` — `agents/{claude,qwen,deepseek,gpt}_agent.py`, `agents/{technical,sentiment,quant,synthesis,gate}_agent.py`, `core/decider.py`, y en el orquestador `_run_pipeline_cycle` + `_collect_votes` + el registro de esos agentes. El historial de git los preserva si algún día se quieren resucitar. Esto recorta `orchestrator.py` en varios cientos de líneas de un golpe.
 
 **Aceptación:** `python core/orchestrator.py` arranca limpio en el VPS sin los módulos eliminados; `grep -ri "kronos\|ollama\|gemini"` en `core/ agents/ api/` no devuelve nada.
 
@@ -213,9 +220,10 @@ Mecánico, sin cambios de comportamiento; hacerlo en un PR aparte de cualquier c
 
 | Fase | Items | Razón |
 |---|---|---|
-| 1 | **P0.1** (bug TP/SL) + **P0.2** (shadow harness) | Sin datos limpios y sin medición, el resto es fe |
+| 0 | ✅ **P0.3** (truncamiento DeepSeek) | Hecho — desbloqueaba decisiones limpias |
+| 1 | **P0.1** (bug TP/SL) + **P0.2** (shadow harness) + **P1.8** (veredicto en dashboard) | Sin datos limpios y sin medición, el resto es fe; P1.8 es la versión en vivo de lo que P0.2 guarda en DB |
 | 2 | **P1.5** (cooldown) + **P1.6** (gate shorts) | Riesgo: tapan el hueco que el daily review ya señaló, son baratos y no dependen de nada |
-| 3 | **P1.3** (cache) + **P1.4** (multi-timeframe) | Mejor input para el decisor, costo menor por ciclo |
+| 3 | **P1.3** (cache) + **P1.4** (multi-timeframe; el "token diet" se puede adelantar a la fase 1) | Mejor input para el decisor, costo menor por ciclo |
 | 4 | **P1.1** (razonamiento) y/o **P1.2** (self-consistency) | El salto de calidad del decisor — validar con el harness de la fase 1 |
 | 5 | **P2.1–P2.3** (MiMo review + crosscheck + observabilidad) | Expansión barata una vez el núcleo está medido |
 | 6 | **P3.1** (limpieza) → **P3.2** (reorganización) | En cualquier momento; ideal antes de la fase 5 para no refactorizar sobre código muerto |

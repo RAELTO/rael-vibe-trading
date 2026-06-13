@@ -4,8 +4,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-from agents.local_agent   import LocalAgent
-from agents.gemini_agent  import GeminiAgent
 from agents.gpt_agent     import GPTAgent
 from agents.deepseek_agent import DeepSeekAgent
 from core.risk_manager    import RiskManager, OrderRequest
@@ -60,8 +58,7 @@ async def main():
         (ClaudeAgent(),   "ClaudeAgent  (40%)"),
         (QwenAPIAgent(),  "QwenAPIAgent (20%)"),
         (DeepSeekAgent(), "DeepSeekAgent(20%)"),
-        (GPTAgent(),      "GPTAgent     (15%)"),
-        (LocalAgent(),    "LocalAgent   ( 5%)"),
+        (GPTAgent(),      "GPTAgent     (16%)"),
     ]
 
     for agent, name in agents:

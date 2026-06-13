@@ -27,7 +27,7 @@ core/orchestrator.py      ← Punto de entrada. asyncio.gather de 6 loops:
   │     claude_advisor_agent.py     Módulo de aprendizaje (CLAUDE_ADVISOR_ENABLED) — post-mortems + revisión diaria
   │     claude_audit_agent.py       Auditor OPCIONAL (CLAUDE_AUDIT_ENABLED, default OFF) — veto BUY/SELL, fail-open
   │     web_search_agent.py         Noticias GPT web-search (no vota; corre cada 3h)
-  │     claude/qwen/deepseek/gpt/local_agent.py  Ensemble legacy (solo modo ENSEMBLE)
+  │     claude/qwen/deepseek/gpt_agent.py  Ensemble legacy (solo modo ENSEMBLE)
   │     technical/sentiment/quant/synthesis/gate_agent.py  Pipeline legacy (modo MULTI_AGENT)
   ├── core/
   │     decider.py        Votación ponderada (solo ENSEMBLE)
@@ -99,7 +99,6 @@ El decisor solo abre posiciones nuevas dentro de la ventana `[TRADING_HOURS_STAR
 | `TRADING_TIMEZONE` | `UTC` | Zona de la ventana (ej: `America/Bogota`) |
 | `TRADING_BUDGET_USDT` | `1000.0` | Capital operativo de referencia |
 | `AGENT_TIMEOUT_SECONDS` | `60` | Timeout por agente |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | LocalAgent (solo ENSEMBLE) |
 
 ## Notas importantes
 
@@ -112,7 +111,7 @@ El decisor solo abre posiciones nuevas dentro de la ventana `[TRADING_HOURS_STAR
 - **Módulo de aprendizaje (Claude advisor)**: al cerrar cada trade, `_run_post_mortem` pide a Claude una lección que se guarda en la tabla `trade_lessons`; las **8 más recientes** se inyectan en el prompt de DeepSeek vía `get_lessons_summary` (loop cerrado). Una vez al día, `_maybe_daily_review` genera una revisión estratégica (`grade` + `summary` + `adjustments`) que se persiste con `save_strategy_review` y se difunde al dashboard. **OJO**: los `adjustments` de esa revisión **NO** se reinyectan en el decisor — solo se muestran en la UI (loop estratégico abierto).
 
 ### Modos legacy (referencia)
-- **`ENSEMBLE`**: 5 agentes (Claude/Qwen/DeepSeek/GPT/Local) votan ponderado vía `decider.py`. Notas: Qwen requiere `extra_body={"enable_thinking": False}`; GPT usa `max_completion_tokens`; Gemini está fuera del pool (cuota baja).
+- **`ENSEMBLE`**: agentes cloud (Claude/Qwen/DeepSeek) votan ponderado vía `decider.py`. Notas: Qwen requiere `extra_body={"enable_thinking": False}`; GPT usa `max_completion_tokens`.
 - **`MULTI_AGENT`**: pipeline de 3 fases (especialistas → síntesis Claude → gate).
 
 ## Memoria con MemPalace

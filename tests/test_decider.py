@@ -5,13 +5,12 @@ from agents.deepseek_agent import DeepSeekAgent
 from core.decider import Decider
 from agents.base_agent import TradingSignal, AgentVote
 
-# 5 agentes simulados votando
+# 4 agentes simulados votando
 signals = [
     TradingSignal("BTCUSDT", AgentVote.SELL, 0.82, "RSI=71 overbought + MACD bearish", "claude-sonnet"),
-    TradingSignal("BTCUSDT", AgentVote.SELL, 0.75, "EMA20 below EMA50, descending channel", "gemini-flash"),
+    TradingSignal("BTCUSDT", AgentVote.SELL, 0.75, "EMA20 below EMA50, descending channel", "qwen-api"),
     TradingSignal("BTCUSDT", AgentVote.HOLD, 0.55, "volume too low to confirm", "gpt-5.4-nano"),
     TradingSignal("BTCUSDT", AgentVote.SELL, 0.78, "BB upper touch + negative momentum", "deepseek-v3"),
-    TradingSignal("BTCUSDT", AgentVote.HOLD, 0.60, "no anomaly detected", "local-qwen"),
 ]
 
 news = {
@@ -24,7 +23,7 @@ news = {
 d = Decider()
 result = d.decide(signals, news_context=news)
 
-print("=== Test Decider — 5 agentes ===\n")
+print("=== Test Decider — 4 agentes ===\n")
 print(f"DeepSeekAgent importado: OK")
 print(f"Decisión final:  {result['decision']}")
 print(f"Score ajustado:  {result['consensus_score']} (raw: {result['raw_score']})")

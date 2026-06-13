@@ -32,7 +32,6 @@ load_dotenv(os.path.join(ROOT, ".env"))
 from agents.claude_agent    import ClaudeAgent
 from agents.qwen_agent      import QwenAPIAgent
 from agents.deepseek_agent  import DeepSeekAgent
-from agents.local_agent     import LocalAgent
 from agents.web_search_agent import WebSearchAgent
 from agents.base_agent      import TradingSignal, AgentVote
 
@@ -157,7 +156,6 @@ class TradingOrchestrator:
 
     def __init__(self):
         self.voting_agents: list = []
-        self.local_agent   = LocalAgent()
         self.news_agent    = WebSearchAgent()
         self.decider       = Decider()
         self.risk          = RiskManager()
@@ -231,7 +229,6 @@ class TradingOrchestrator:
                 ClaudeAgent(),
                 QwenAPIAgent(),
                 DeepSeekAgent(),
-                self.local_agent,
             ]
         else:
             candidates = []
@@ -434,28 +431,83 @@ class TradingOrchestrator:
 
         return exit_price, exit_reason, realized_pnl
 
-    def _verify_close_consistency(self, trade_id: int, exit_reason: str, pnl: float):
+    @staticmethod
+    def _close_is_coherent(
+        side: str, entry_price: float | None, exit_price: float | None,
+        exit_reason: str, pnl: float, tol: float = 0.001,
+    ) -> bool:
         """
-        Sanity-check tras cerrar un trade: el motivo y el PnL deben concordar en signo.
-        Tras unificar la fuente de verdad (realized_pnl de Binance), un cierre TP NO puede
-        traer PnL<0 ni un SL/LIQUIDATED PnL>0. Si ocurre, lo deja visible en el log como
-        regresión a investigar; si concuerda, deja constancia de que la corrección funciona.
+        Verifica que un cierre sea coherente por DOS vías independientes:
+          1. Signo: TP ⇒ PnL>0 ; SL/LIQUIDATED ⇒ PnL<0.
+          2. Dirección: el exit_price respecto al entry_price debe concordar con el lado y
+             el motivo (LONG-TP exit>entry, SHORT-TP exit<entry, e invertido para SL/LIQ).
+        Las dos vías usan datos distintos (realized_pnl vs VWAP de fills), así que discrepar
+        delata un dato corrupto aunque una sola fuente parezca correcta. `tol` = banda relativa
+        por fees/slippage (0.1%). Motivos no concluyentes (OFFLINE/MANUAL/UNKNOWN) no se validan.
         """
-        inconsistent = (
-            (exit_reason == "TP" and pnl < 0)
-            or (exit_reason in ("SL", "LIQUIDATED") and pnl > 0)
+        if exit_reason not in ("TP", "SL", "LIQUIDATED"):
+            return True
+        # 1) Coherencia de signo
+        if exit_reason == "TP" and pnl < 0:
+            return False
+        if exit_reason in ("SL", "LIQUIDATED") and pnl > 0:
+            return False
+        # 2) Coherencia direccional
+        if entry_price and exit_price:
+            is_long = side in ("BUY", "LONG")
+            band = entry_price * tol
+            if exit_reason == "TP":
+                if is_long and exit_price < entry_price - band:
+                    return False
+                if not is_long and exit_price > entry_price + band:
+                    return False
+            else:  # SL / LIQUIDATED
+                if is_long and exit_price > entry_price + band:
+                    return False
+                if not is_long and exit_price < entry_price - band:
+                    return False
+        return True
+
+    def _verify_close_consistency(
+        self, trade: dict, exit_price: float, exit_reason: str, pnl: float,
+    ) -> bool:
+        """
+        Sanity-check tras cerrar un trade. Devuelve True si el cierre es coherente (signo +
+        dirección, ver `_close_is_coherent`). Si NO lo es, lo registra como `system_event`
+        crítico (queda visible en el dashboard y en el contexto del decisor) para que un dato
+        corrupto no se infiltre silenciosamente — y el post-mortem lo usará para NO generar
+        una lección a partir de él.
+        """
+        coherent = self._close_is_coherent(
+            trade.get("side"), trade.get("entry_price"), exit_price, exit_reason, pnl,
         )
-        if inconsistent:
+        tid = trade.get("id")
+        if coherent:
             _log(
-                f"[CloseCheck] ⚠ INCONSISTENCIA trade #{trade_id}: exit_reason={exit_reason} "
-                f"pero PnL={pnl:+.4f} USDT — revisar _resolve_close_from_binance",
-                "WARN",
+                f"[CloseCheck] ✓ trade #{tid}: {exit_reason} ↔ PnL={pnl:+.4f} USDT (coherente)",
+                "OK",
             )
         else:
             _log(
-                f"[CloseCheck] ✓ trade #{trade_id}: {exit_reason} ↔ PnL={pnl:+.4f} USDT (coherente)",
-                "OK",
+                f"[CloseCheck] ⚠ INCOHERENTE trade #{tid}: side={trade.get('side')} "
+                f"entry={trade.get('entry_price')} exit={exit_price} reason={exit_reason} "
+                f"PnL={pnl:+.4f} USDT — exit_reason dudoso; lección omitida, evento registrado.",
+                "WARN",
             )
+            try:
+                self.store.log_system_event(
+                    "CLOSE_INCOHERENT",
+                    self.trading_mode,
+                    self.risk.state.portfolio_balance,
+                    {
+                        "trade_id": tid, "side": trade.get("side"),
+                        "entry_price": trade.get("entry_price"), "exit_price": exit_price,
+                        "exit_reason": exit_reason, "pnl": round(pnl, 4),
+                    },
+                )
+            except Exception as e:
+                _log(f"[CloseCheck] no se pudo registrar system_event: {e}", "WARN")
+        return coherent
 
     async def _reconcile_open_trades(self):
         """
@@ -515,7 +567,7 @@ class TradingOrchestrator:
                 realized_pnl=realized_pnl,
             )
             self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
-            self._verify_close_consistency(trade["id"], exit_reason, pnl)
+            self._verify_close_consistency(trade, exit_price, exit_reason, pnl)
 
             _log(
                 f"[Reconcile] Trade #{trade['id']} cerrado en DB: "
@@ -1415,7 +1467,7 @@ class TradingOrchestrator:
                     self._sl_order_id = None
                 if self.risk.state.open_positions > 0:
                     self.risk.state.open_positions -= 1
-                self._verify_close_consistency(trade["id"], exit_reason, pnl)
+                self._verify_close_consistency(trade, exit_price, exit_reason, pnl)
                 await broadcast_position_update(None)
                 _log(
                     f"[CheckClosed] Trade #{trade['id']} cerrado: {exit_reason} "
@@ -1499,12 +1551,6 @@ class TradingOrchestrator:
         qty = self.futures._adjust_quantity(symbol, round(position_usdt / price, 6))
         if qty <= 0:
             _log(f"[Futures] Qty ajustada = 0, saltando.", "WARN")
-            return
-
-        # Gate-check
-        gate_ok = True if DECISION_MODE == "DEEPSEEK_SINGLE" else await self.local_agent.gate_check(decision, score)
-        if not gate_ok:
-            _log(f"[Futures] Gate-check BLOQUEÓ {side} score={score:.3f}", "WARN")
             return
 
         # Calcular precios — TP adaptativo al soporte/resistencia (banda de Bollinger),
@@ -1614,11 +1660,6 @@ class TradingOrchestrator:
         qty = self.spot._adjust_quantity(symbol, qty)
         if qty <= 0:
             _log(f"[Spot] Qty ajustada = 0, saltando.", "WARN")
-            return
-
-        gate_ok = True if DECISION_MODE == "DEEPSEEK_SINGLE" else await self.local_agent.gate_check(side, score)
-        if not gate_ok:
-            _log(f"[Spot] Gate-check BLOQUEÓ {side} score={score:.3f}", "WARN")
             return
 
         order_req = OrderRequest(
@@ -1970,7 +2011,7 @@ class TradingOrchestrator:
         pnl = self.store.close_trade(
             self._active_trade_id, self._cycle, exit_price, exit_reason, realized_pnl=realized_pnl,
         )
-        self._verify_close_consistency(active["id"], exit_reason, pnl)
+        self._verify_close_consistency(active, exit_price, exit_reason, pnl)
         self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
         self._active_trade_id = None
         self._sl_order_id = None
@@ -2005,6 +2046,18 @@ class TradingOrchestrator:
 
     async def _run_post_mortem(self, trade: dict, exit_price: float, exit_reason: str, pnl: float):
         """Pide a Claude una lección del trade cerrado, la guarda y la difunde al dashboard."""
+        # Guard de calidad de datos: una lección derivada de un cierre incoherente (exit_reason
+        # dudoso) contamina el prompt del decisor — las lecciones se reinyectan en cada ciclo.
+        # Si el cierre no es coherente, no se genera lección.
+        if not self._close_is_coherent(
+            trade.get("side"), trade.get("entry_price"), exit_price, exit_reason, pnl,
+        ):
+            _log(
+                f"[Advisor] Post-mortem omitido (trade #{trade.get('id')}): cierre incoherente, "
+                f"dato no confiable — no se genera lección.",
+                "WARN",
+            )
+            return
         try:
             result = await asyncio.wait_for(
                 self._advisor_agent.post_mortem(trade, exit_price, exit_reason, pnl),

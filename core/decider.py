@@ -13,26 +13,19 @@ class Decider:
     """
     Motor de votación ponderada entre agentes.
 
-    Pesos actuales (6 agentes votantes + 1 gatekeeper):
-      claude-sonnet  38% — decisión final, razonamiento macro + memoria histórica
-      qwen-api       20% — Qwen3-235b, mejor benchmark math/quant del grupo
-      deepseek-v3    18% — análisis quant/matemático especializado
-      gpt-5.4-nano   14% — sentimiento macro, segunda opinión
-      kronos-mini     5% — forecasting OHLCV cuantitativo (modelo local, probatorio)
-      local-qwen      5% — gatekeeper local (voto de sanidad, sin costo API)
-
-    Gemini 2.5 Flash: excluido del voting (free tier 20 req/día insuficiente para
-    producción; puede usarse como fallback manual si otros agentes fallan)
+    Pesos actuales (4 agentes votantes cloud, normalizados a 1.0):
+      claude-sonnet  42% — decisión final, razonamiento macro + memoria histórica
+      qwen-api       22% — Qwen3-235b, mejor benchmark math/quant del grupo
+      deepseek-v3    20% — análisis quant/matemático especializado
+      gpt-5.4-nano   16% — sentimiento macro, segunda opinión
     """
 
-    # Pesos base. El orden define la jerarquía de herencia cuando un agente cae.
+    # Pesos base (suman 1.0). El orden define la jerarquía de herencia cuando un agente cae.
     AGENT_WEIGHTS = {
-        "claude-sonnet": 0.38,
-        "qwen-api":      0.20,
-        "deepseek-v3":   0.18,
-        "gpt-5.4-nano":  0.14,
-        "kronos-mini":   0.05,
-        "local-qwen":    0.05,
+        "claude-sonnet": 0.42,
+        "qwen-api":      0.22,
+        "deepseek-v3":   0.20,
+        "gpt-5.4-nano":  0.16,
     }
 
     # Jerarquía descendente de confianza (primer disponible hereda el 50%)
@@ -41,8 +34,6 @@ class Decider:
         "qwen-api",
         "deepseek-v3",
         "gpt-5.4-nano",
-        "local-qwen",
-        "kronos-mini",
     ]
 
     def _effective_weights(self, present_ids: list[str]) -> dict[str, float]:
