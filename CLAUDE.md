@@ -67,7 +67,7 @@ Responder ÚNICAMENTE con JSON válido:
 - **Máximo 1 posición de futures abierta a la vez.**
 - Tamaño de posición: escala de `MIN_POSITION_USDT` ($450) a `MAX_POSITION_USDT` ($600) según convicción. El margen requerido (`notional/leverage`) debe caber en `MAX_POSITION_SIZE_PERCENT` del budget (25% → cap $250).
 - Stop-loss: **−1.5%** (fijo; el trailing lo ajusta si el precio avanza a favor) | Leverage: **3x**.
-- **Take-profit adaptativo** (`calculate_adaptive_tp`): apunta al soporte/resistencia más cercano (banda de Bollinger), acotado a **[1.5%, 4%]**. Si no hay banda válida, cae al 2.5% fijo.
+- **Take-profit adaptativo** (`calculate_adaptive_tp`): apunta al soporte/resistencia más cercano (banda de Bollinger), acotado a **[1.5%, 4%]**. **Excepción de tendencia**: si el trade va a favor de una tendencia confirmada (LONG con `price>EMA20>EMA50` o SHORT con `price<EMA20<EMA50`), la banda NO capa el objetivo — se garantiza al menos 2.5% de recorrido (en tendencia el precio cabalga sobre la banda; capar el TP ahí provocaba un deadlock: el gate de reward:risk bloqueaba todos los longs en un uptrend). En rango/contra-tendencia se mantiene la lógica estricta (pegado a la banda → piso 1.5% → lo bloquea el gate). Si no hay banda válida, cae al 2.5% fijo.
 - **Gate reward:risk** (`MIN_REWARD_RISK`, 1.2): el TP debe ofrecer al menos 1.2× la distancia del SL, o se bloquea. Codifica en regla fija (código, siempre activa) el criterio de "no abrir shorts sin espacio al objetivo".
 - La liquidación debe quedar al menos 2× más lejos que el SL, o se bloquea.
 - **Hard stop**: si la pérdida acumulada alcanza `MAX_TRADING_LOSS_USDT` ($700 = 70% del budget), se suspende el trading. Se reactiva solo cuando se detecta un reset manual del balance del testnet (~$5.000).

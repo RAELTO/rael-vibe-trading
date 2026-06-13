@@ -149,6 +149,8 @@ El SL fijo de 1.5% es estrecho cuando BTC se mueve 4% diario y holgado cuando se
 3. El gate `MIN_REWARD_RISK=1.2` queda intacto y sigue siendo el árbitro final.
 4. El trailing stop (`_check_trailing_stop`) debe leer el `sl_pct` real del trade (ya se persiste `sl_price` — verificar que no asuma 1.5% hardcodeado).
 
+**✅ HECHO (parcial, precursor de P1.7 — fix de deadlock en vivo):** `calculate_adaptive_tp` ahora tiene **excepción de tendencia** — en trades alineados con la tendencia (LONG `price>EMA20>EMA50` / SHORT inverso) la banda deja de capar el TP y se garantiza ≥2.5% de recorrido. Causa: 12h de LONGs bloqueados por reward:risk 1.00 en un uptrend (precio pegado a la banda superior → TP capado al piso 1.5% = SL). Probado: trend-aligned → 2.5% (ratio 1.67, pasa); rango/contra-tendencia → 1.5% (sigue bloqueando, correcto). SL/gate intactos. El escalado ATR completo de P1.7 sigue pendiente de shadow data.
+
 ## P1.8 — Observabilidad: por qué un voto NO se convirtió en trade
 
 Hoy el dashboard muestra el voto del decisor pero no el **veredicto final**. Un BUY/SELL puede no ejecutarse por (a) `conviction < MIN_CONVICTION` (`return` silencioso en `_run_single_decision_cycle`), (b) RiskManager (reward:risk, buffer de liquidación, max posiciones), (c) cooldown/gate estructural (P1.5/P1.6), o sí ejecutarse. Esa opacidad ya causó confusión real **dos veces** (el short bloqueado por reward:risk y el "LONG fantasma" de P0.3).

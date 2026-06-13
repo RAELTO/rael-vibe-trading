@@ -509,18 +509,32 @@ class BinanceFuturesClient:
         (banda de Bollinger) acotando el recorrido a [min_pct, max_pct].
           - LONG  -> objetivo = banda superior (resistencia)
           - SHORT -> objetivo = banda inferior (soporte)
-        Si entras pegado a la banda, el recorrido real es ínfimo: se acota al piso (min_pct)
-        y el gate de reward:risk del RiskManager bloquea el trade por falta de espacio.
+
+        Excepción de TENDENCIA (P1.3-era fix): en un trade ALINEADO con una tendencia confirmada
+        (LONG con price>EMA20>EMA50, o SHORT con price<EMA20<EMA50) la banda NO es techo — el precio
+        cabalga sobre ella y la banda se expande. Tratarla como objetivo capa el TP al piso (min_pct)
+        y el gate de reward:risk bloquea el trade aunque la tendencia siga (deadlock observado: 12h de
+        LONGs bloqueados en un uptrend). En ese caso se garantiza al menos fixed_pct (2.5%) de recorrido.
+        En rango/contra-tendencia se mantiene la lógica estricta: pegado a la banda -> piso -> bloqueo.
         Si no hay banda válida, cae al fixed_pct (2.5%).
         """
         band = market_data.get("bb_upper") if side == "LONG" else market_data.get("bb_lower")
         if not band or band <= 0:
             return self.calculate_tp(side, price, fixed_pct)
 
+        ema20 = market_data.get("ema20") or 0
+        ema50 = market_data.get("ema50") or 0
+        trend_aligned = (
+            (side == "LONG"  and price > ema20 > ema50) or
+            (side == "SHORT" and 0 < price < ema20 < ema50)
+        )
+
         # Recorrido implícito hasta la banda en la dirección del beneficio.
         reward_pct = (band - price) / price if side == "LONG" else (price - band) / price
         if reward_pct <= 0:            # banda del lado equivocado (precio ya la cruzó) -> usar fijo
             reward_pct = fixed_pct
+        elif trend_aligned:            # a favor de tendencia: la banda no capa el objetivo
+            reward_pct = max(fixed_pct, reward_pct)
         reward_pct = max(min_pct, min(max_pct, reward_pct))
 
         if side == "LONG":
