@@ -19,6 +19,21 @@ function translateDecision(d: string, mode?: string) {
   return d;
 }
 
+// P1.8: veredicto final del ciclo — por qué un voto se ejecutó o no.
+function verdictMeta(v?: string): { label: string; color: string } | null {
+  if (!v) return null;
+  const map: Record<string, { label: string; color: string }> = {
+    EXECUTED:          { label: "EXECUTED",   color: "#22d27a" },
+    BLOCKED_RISK:      { label: "RISK BLOCK", color: "#f05060" },
+    BLOCKED:           { label: "BLOCKED",    color: "#f05060" },
+    VETOED:            { label: "VETOED",     color: "#f05060" },
+    AVOID:             { label: "AVOID",      color: "#f05060" },
+    SKIPPED_THRESHOLD: { label: "SKIPPED",    color: "#f0a030" },
+    HOLD:              { label: "HOLD",       color: "#8888aa" },
+  };
+  return map[v] ?? { label: v, color: "#8888aa" };
+}
+
 function useCycleProgress(lastTs: string | null, cycleSeconds: number) {
   const [progress, setProgress] = useState(0);
 
@@ -95,6 +110,7 @@ export function DecisionPanel({ decision, tradingMode, intervalSeconds, activePo
   // Con una posición abierta el decisor se pausa (máx. 1 posición) hasta que
   // la operación cierre por TP/SL. Mostramos eso en vez de "NEXT CYCLE 0m".
   const isPaused = !!activePosition;
+  const vm = verdictMeta(decision?.verdict);
 
   const sigColor = !decision
     ? "#8888aa"
@@ -186,7 +202,30 @@ export function DecisionPanel({ decision, tradingMode, intervalSeconds, activePo
                 }}>
                   {translateDecision(decision.decision, tradingMode)}
                 </span>
+                {vm && (
+                  <span
+                    title={decision.verdict_reason || vm.label}
+                    style={{
+                      fontSize: 9, fontWeight: 700, color: vm.color,
+                      border: `1px solid ${vm.color}55`, background: `${vm.color}15`,
+                      padding: "2px 8px", borderRadius: 5,
+                      fontFamily: "'JetBrains Mono', monospace", letterSpacing: "1px",
+                    }}
+                  >
+                    {vm.label}
+                  </span>
+                )}
               </div>
+
+              {/* Verdict reason (por qué no se ejecutó / se ejecutó) */}
+              {decision.verdict_reason && (
+                <div style={{
+                  fontSize: 10, color: vm?.color ?? "#8888aa", marginBottom: 8,
+                  fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.5,
+                }}>
+                  {decision.verdict_reason}
+                </div>
+              )}
 
               {/* Synthesis reasoning label */}
               <div style={{

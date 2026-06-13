@@ -25,6 +25,15 @@ export interface DecisionEntry {
   score: number;
   reason: string;
   ts: string;
+  verdict?: string;         // P1.8: EXECUTED | SKIPPED_THRESHOLD | BLOCKED_RISK | BLOCKED | VETOED | AVOID | HOLD
+  verdict_reason?: string;  // motivo del veredicto
+}
+
+export interface CooldownState {
+  active: boolean;
+  loss_streak: number;
+  remaining: string;        // "23h59m"
+  until: string | null;
 }
 
 export interface Portfolio {
@@ -67,6 +76,7 @@ export interface NewsContext {
   summary?: string;
   assets?: Record<string, number>;
   message?: string;
+  news_source_route?: string;   // P2.3: openai | mimo-fallback | default
 }
 
 export interface StrategyReview {
@@ -115,6 +125,7 @@ export interface AppState {
   strategy_review?: StrategyReview | null;
   lessons?: TradeLesson[];
   config?: RuntimeConfig;
+  cooldown?: CooldownState;
 }
 
 export interface WsMessage {

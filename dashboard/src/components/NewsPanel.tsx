@@ -32,8 +32,26 @@ function SentimentBar({ value }: { value: number }) {
 }
 
 export function NewsPanel({ news }: NewsPanelProps) {
+  // P2.3: ruta de la última búsqueda de noticias (primaria OpenAI vs fallback MiMo).
+  const route = news?.news_source_route;
+  const routeBadge = route && route !== "default" ? (
+    <span
+      className="text-[9px] font-mono"
+      title={route === "mimo-fallback"
+        ? "OpenAI sin créditos — noticias vía MiMo (OpenRouter :online)"
+        : "Noticias vía OpenAI web search"}
+      style={{
+        color: route === "mimo-fallback" ? "#f0a030" : "#8888aa",
+        border: `1px solid ${route === "mimo-fallback" ? "#f0a03055" : "rgba(255,255,255,0.12)"}`,
+        padding: "1px 6px", borderRadius: 4, letterSpacing: "0.5px",
+      }}
+    >
+      {route === "mimo-fallback" ? "via MiMo" : "via GPT"}
+    </span>
+  ) : undefined;
+
   return (
-    <Panel title="Market Intelligence">
+    <Panel title="Market Intelligence" action={routeBadge}>
       {!news || news.message ? (
         <div className="flex items-center justify-center h-20 gap-2" style={{ color: "#44445a" }}>
           <span className="text-xs">No news data yet</span>

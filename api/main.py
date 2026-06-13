@@ -62,6 +62,7 @@ app_state: dict = {
     "hard_stop_message": None,       # mensaje de hard stop si se alcanzó el límite
     "strategy_review":  None,        # última revisión estratégica diaria (Claude advisor)
     "lessons":          [],          # lecciones de post-mortem recientes (Claude advisor)
+    "cooldown":         {"active": False, "loss_streak": 0, "remaining": "", "until": None},  # P1.5
     "config":         {              # configuración runtime (la setea el orquestador al arrancar)
         "analysis_interval_seconds": 900,
         "trading_hours_enabled":     False,
@@ -361,3 +362,26 @@ async def broadcast_strategy_review(review: dict):
 async def broadcast_lesson(lesson: dict):
     app_state["lessons"] = [lesson] + app_state["lessons"][:19]  # últimas 20
     await manager.broadcast("trade_lesson", lesson)
+
+
+async def broadcast_decision_verdict(verdict: str, reason: str = ""):
+    """
+    P1.8: veredicto final del ciclo (EXECUTED / SKIPPED_THRESHOLD / BLOCKED_RISK / BLOCKED /
+    AVOID / HOLD) con su motivo. Se adjunta a la última decisión para que el dashboard muestre
+    POR QUÉ un voto no se convirtió en trade.
+    """
+    if app_state.get("last_decision"):
+        app_state["last_decision"]["verdict"] = verdict
+        app_state["last_decision"]["verdict_reason"] = reason
+    await manager.broadcast("decision_verdict", {
+        "verdict": verdict, "reason": reason,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+async def broadcast_cooldown(active: bool, loss_streak: int, remaining: str, until: str | None):
+    """P1.5: estado del cooldown por racha de SLs para el badge del dashboard."""
+    app_state["cooldown"] = {
+        "active": active, "loss_streak": loss_streak, "remaining": remaining, "until": until,
+    }
+    await manager.broadcast("cooldown", app_state["cooldown"])

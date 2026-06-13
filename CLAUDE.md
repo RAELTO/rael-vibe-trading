@@ -71,6 +71,7 @@ Responder ÚNICAMENTE con JSON válido:
 - **Gate reward:risk** (`MIN_REWARD_RISK`, 1.2): el TP debe ofrecer al menos 1.2× la distancia del SL, o se bloquea. Codifica en regla fija (código, siempre activa) el criterio de "no abrir shorts sin espacio al objetivo".
 - La liquidación debe quedar al menos 2× más lejos que el SL, o se bloquea.
 - **Hard stop**: si la pérdida acumulada alcanza `MAX_TRADING_LOSS_USDT` ($700 = 70% del budget), se suspende el trading. Se reactiva solo cuando se detecta un reset manual del balance del testnet (~$5.000).
+- **Cooldown por racha de SLs** (`FUTURES_LOSS_STREAK_LIMIT`=2, `FUTURES_COOLDOWN_HOURS`=24): tras 2 SL/LIQUIDATED consecutivos se bloquean **entradas nuevas** durante 24h (un TP resetea la racha). Persiste entre reinicios (`risk_runtime`) y NO afecta la gestión de una posición ya abierta. Lo pidió el daily review tras la racha −2.
 
 ## Horario de trading
 
@@ -93,6 +94,7 @@ El decisor solo abre posiciones nuevas dentro de la ventana `[TRADING_HOURS_STAR
 | `MIN_POSITION_USDT` / `MAX_POSITION_USDT` | `450` / `600` | Rango de nocional por posición |
 | `MAX_POSITION_SIZE_PERCENT` | `25.0` | Cap de margen por posición (% del budget) |
 | `FUTURES_MAX_DAILY_LOSS_PCT` | `0` | Límite de pérdida diaria futures (0 = desactivado) |
+| `FUTURES_LOSS_STREAK_LIMIT` / `FUTURES_COOLDOWN_HOURS` | `2` / `24` | Cooldown: tras N SL consecutivos, pausa entradas nuevas H horas (0h = off) |
 | `MAX_TRADING_LOSS_USDT` | `700` | Pérdida acumulada → hard stop (70% del budget) |
 | `TRADING_HOURS_ENABLED` | `true` | Activa el horario de trading |
 | `TRADING_HOURS_START` / `_END` | `8` / `20` | Ventana activa (hora) |

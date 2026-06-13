@@ -47,6 +47,7 @@ const initialState: AppState = {
     trading_hours_end: 20,
     trading_timezone: "UTC",
   },
+  cooldown: { active: false, loss_streak: 0, remaining: "", until: null },
   ...loadPersistedState(),
 };
 
@@ -85,6 +86,15 @@ export function useWebSocket() {
         }
         case "decision":
           next = { ...prev, last_decision: msg.data as AppState["last_decision"] }; break;
+        case "decision_verdict": {
+          const d = msg.data as { verdict: string; reason: string };
+          next = prev.last_decision
+            ? { ...prev, last_decision: { ...prev.last_decision, verdict: d.verdict, verdict_reason: d.reason } }
+            : prev;
+          break;
+        }
+        case "cooldown":
+          next = { ...prev, cooldown: msg.data as AppState["cooldown"] }; break;
         case "order_placed": {
           const o = msg.data as AppState["open_positions"][number];
           // Deduplicar por símbolo (coincide con el backend: 1 entrada por símbolo)

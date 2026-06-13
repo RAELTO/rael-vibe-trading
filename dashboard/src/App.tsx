@@ -187,6 +187,7 @@ export default function App() {
           cycle={state.current_cycle}
           riskHealth={state.risk_health}
           tradingMode={state.trading_mode}
+          cooldown={state.cooldown}
         />
 
         {/* ── Mobile layout ── */}

@@ -107,7 +107,7 @@ Decide cada 15 min con SL de 1.5% pero solo ve **50 velas de 1h** (`execution/bi
 
 **Implementación:**
 1. `get_market_data`: añadir un segundo fetch de klines `15m` (últimas ~64) y un resumen `4h` (solo OHLC de las últimas 12, para contexto de tendencia). Exponer como `closes_15m`, `highs_15m`, `lows_15m`, `summary_4h`.
-2. **(Adelantable, independiente del resto de P1.4)** En el prompt, presentar las series **redondeadas** (precios BTC a enteros, volúmenes a 1 decimal) — las series actuales con floats completos queman cientos de tokens por ciclo sin aportar señal. Bonus: menos tokens de prompt = menos presión sobre el presupuesto del razonamiento = menor riesgo de truncamiento (P0.3). Vale la pena hacerlo ya.
+2. **✅ HECHO** En el prompt, series **redondeadas** (precios BTC a enteros, volúmenes a 1 decimal) — `_ri`/`_rv` en `deepseek_decision_agent.py`. Menos tokens y menos presión de truncamiento (P0.3). *(Lo que resta de P1.4 — el segundo fetch 15m/4h multi-timeframe — cambia el INPUT de decisión, así que se mide con shadow tras desplegarlo; pendiente.)*
 3. Calcular RSI/EMA también sobre 15m y etiquetar claramente cada timeframe en el prompt ("1H trend / 15M entry timing").
 4. Medir con shadow harness antes/después.
 
@@ -121,6 +121,8 @@ El daily review ya lo pidió explícitamente: *"After two consecutive stop-loss 
 3. **Persistir** racha y timestamp del cooldown en `state_store` (sobrevivir reinicios del VPS).
 4. Mostrar el estado de cooldown en el dashboard (badge en el header, junto a HEALTHY/RUNNING) y registrarlo como `system_event`.
 5. El cooldown NO afecta al PositionMonitor ni a la gestión de la posición abierta — solo bloquea entradas nuevas.
+
+**✅ HECHO (backend):** `RiskState.loss_streak`/`cooldown_until`; `register_close` (SL/LIQ suma, TP resetea) + `in_cooldown` (auto-expira) + check al inicio de `validate_futures_order`; persistencia en tabla `risk_runtime` (`save/get_cooldown_state`); orquestador carga el estado al arrancar (`_load_cooldown_state`) y lo actualiza en los 3 cierres (`_register_close_for_cooldown`), con `system_event` `COOLDOWN_ACTIVATED`. Env `FUTURES_LOSS_STREAK_LIMIT=2` / `FUTURES_COOLDOWN_HOURS=24`. Probado end-to-end (racha→activación→bloqueo→reset por TP→persistencia). **✅ Badge en el dashboard:** `broadcast_cooldown` + evento WS `cooldown` + chip "⏸ COOLDOWN 23h59m" en el header (`Header.tsx`). **P1.5 COMPLETO.**
 
 ## P1.6 — Riesgo: gate estructural para shorts (corrige el sesgo 8/8 SHORT)
 
@@ -156,6 +158,8 @@ Hoy el dashboard muestra el voto del decisor pero no el **veredicto final**. Un 
 
 Complementa el `blocked_reason` que P0.2 persiste en DB — esto es la versión **en vivo**. Barato y de alto valor para confiar/depurar.
 
+**✅ HECHO:** `broadcast_decision_verdict(verdict, reason)` (api/main.py) + evento WS `decision_verdict`; el orquestador emite el veredicto en los 3 puntos de salida del ciclo (`EXECUTED` / `SKIPPED_THRESHOLD` / `AVOID` / `BLOCKED_RISK:<motivo>` / `BLOCKED`), capturando el motivo del RiskManager vía `self._last_exec_verdict`. Dashboard: badge de veredicto + línea de motivo en la tarjeta LAST DECISION (`DecisionPanel.tsx`), manejado en vivo por `useWebSocket`.
+
 ---
 
 ## P2.1 — MiMo: segunda opinión barata en señales borderline
@@ -184,6 +188,8 @@ Un `verified_catalyst=true` de la ruta primaria puede subir convicción y mover 
 Hoy, si OpenAI se queda sin créditos y entra el fallback MiMo, solo se ve en la consola del VPS.
 
 **Implementación:** añadir `news_source_route: "openai" | "mimo-fallback" | "default"` al contexto que produce `analyze_with_gpt_search()`, propagarlo a `app_state` y mostrarlo en el panel Market Intelligence del dashboard (badge pequeño). Registrar `system_event` en cada transición primaria→fallback.
+
+**✅ HECHO:** `news_source_route` taggeado en cada ruta de `web_search_agent.py` (openai / mimo-fallback / default) y en `_default_context`; fluye por `broadcast_news` → `last_news`. Dashboard: badge "via GPT" / "via MiMo" (ámbar) en el header del panel Market Intelligence (`NewsPanel.tsx`). *(El `system_event` por transición queda como mejora menor pendiente; el fallback ya se ve en logs y en el badge.)*
 
 ---
 
@@ -223,8 +229,8 @@ Mecánico, sin cambios de comportamiento; hacerlo en un PR aparte de cualquier c
 | Fase | Items | Razón |
 |---|---|---|
 | 0 | ✅ **P0.3** (truncamiento DeepSeek) | Hecho — desbloqueaba decisiones limpias |
-| 1 | ✅ **P0.1** (bug TP/SL) + ✅ **P0.2** (shadow harness, backend+dashboard) + **P1.8** (veredicto en dashboard, pendiente) | Sin datos limpios y sin medición, el resto es fe; P1.8 es la versión en vivo de lo que P0.2 guarda en DB |
-| 2 | **P1.5** (cooldown) + **P1.6** (gate shorts) | Riesgo: tapan el hueco que el daily review ya señaló, son baratos y no dependen de nada |
+| 1 | ✅ **P0.1** (bug TP/SL) + ✅ **P0.2** (shadow harness) + ✅ **P1.8** (veredicto en dashboard) | **FASE 1 COMPLETA.** Sin datos limpios y sin medición, el resto es fe |
+| 2 | ✅ **P1.5** (cooldown) + **P1.6** (gate shorts, espera shadow data) | Riesgo: tapan el hueco que el daily review ya señaló |
 | 3 | **P1.3** (cache) + **P1.4** (multi-timeframe; el "token diet" se puede adelantar a la fase 1) | Mejor input para el decisor, costo menor por ciclo |
 | 4 | **P1.1** (razonamiento) y/o **P1.2** (self-consistency) | El salto de calidad del decisor — validar con el harness de la fase 1 |
 | 5 | **P2.1–P2.3** (MiMo review + crosscheck + observabilidad) | Expansión barata una vez el núcleo está medido |

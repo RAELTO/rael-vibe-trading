@@ -69,6 +69,8 @@ from api.main import (
     broadcast_hard_stop,
     broadcast_strategy_review,
     broadcast_lesson,
+    broadcast_decision_verdict,
+    broadcast_cooldown,
 )
 
 # ─── constantes ───────────────────────────────────────────────────────────────
@@ -161,6 +163,7 @@ class TradingOrchestrator:
         self.decider       = Decider()
         self.risk          = RiskManager()
         self.store         = StateStore()
+        self._load_cooldown_state()   # P1.5: restaurar racha de SLs / cooldown tras reinicio del VPS
         self.epoch         = None
 
         # Pipeline agents (initialized in startup() if PIPELINE_MODE == "MULTI_AGENT")
@@ -185,6 +188,7 @@ class TradingOrchestrator:
         self._decision_log: list[dict] = []
         self._active_trade_id: int | None = None   # trade futures abierto
         self._sl_order_id:    int | None = None    # ID de la orden SL activa en Binance
+        self._last_exec_verdict: tuple[str, str] | None = None  # P1.8: (verdict, motivo) del último intento
         self._hard_stop       = False              # True cuando se alcanza el límite de pérdida
 
         # Detección de reset de balance Binance testnet
@@ -510,6 +514,50 @@ class TradingOrchestrator:
                 _log(f"[CloseCheck] no se pudo registrar system_event: {e}", "WARN")
         return coherent
 
+    def _load_cooldown_state(self):
+        """P1.5: restaura la racha de SLs y el cooldown desde la DB al arrancar (sync, pre-loop).
+        Puebla app_state['cooldown'] para que el WS lo envíe en el evento init."""
+        try:
+            cd = self.store.get_cooldown_state()
+            self.risk.state.loss_streak = int(cd.get("loss_streak", 0) or 0)
+            self.risk.state.cooldown_until = cd.get("cooldown_until")
+            cooling, remaining = self.risk.in_cooldown()
+            app_state["cooldown"] = {
+                "active": cooling, "loss_streak": self.risk.state.loss_streak,
+                "remaining": remaining, "until": self.risk.state.cooldown_until,
+            }
+            if cooling:
+                _log(f"[Cooldown] activo al arrancar — {remaining} restantes "
+                     f"({self.risk.state.loss_streak} SL consecutivos).", "WARN")
+        except Exception as e:
+            _log(f"[Cooldown] no se pudo cargar estado: {e}", "WARN")
+
+    async def _register_close_for_cooldown(self, exit_reason: str):
+        """
+        P1.5: actualiza la racha de SLs al cerrar un trade, persiste el cooldown y difunde el badge.
+        Un SL/LIQUIDATED suma a la racha (y activa el cooldown al llegar al límite); un TP la reinicia.
+        """
+        activated = self.risk.register_close(exit_reason)
+        try:
+            self.store.save_cooldown_state(self.risk.state.loss_streak, self.risk.state.cooldown_until)
+        except Exception as e:
+            _log(f"[Cooldown] no se pudo persistir: {e}", "WARN")
+        if activated:
+            _log(
+                f"[Cooldown] {self.risk.state.loss_streak} SL consecutivos — entradas nuevas "
+                f"pausadas {self.risk.cooldown_hours:.0f}h (hasta {self.risk.state.cooldown_until}).",
+                "WARN",
+            )
+            try:
+                self.store.log_system_event(
+                    "COOLDOWN_ACTIVATED", self.trading_mode, self.risk.state.portfolio_balance,
+                    {"loss_streak": self.risk.state.loss_streak, "until": self.risk.state.cooldown_until},
+                )
+            except Exception:
+                pass
+        cooling, remaining = self.risk.in_cooldown()
+        await broadcast_cooldown(cooling, self.risk.state.loss_streak, remaining, self.risk.state.cooldown_until)
+
     async def _reconcile_open_trades(self):
         """
         Verifica al arrancar que cada trade OPEN en la DB tenga posición real en Binance.
@@ -569,6 +617,7 @@ class TradingOrchestrator:
             )
             self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
             self._verify_close_consistency(trade, exit_price, exit_reason, pnl)
+            await self._register_close_for_cooldown(exit_reason)
 
             _log(
                 f"[Reconcile] Trade #{trade['id']} cerrado en DB: "
@@ -1021,12 +1070,17 @@ class TradingOrchestrator:
                 executed=False,
                 blocked_reason=None if vote == "HOLD" else "below_threshold",
             )
+            await broadcast_decision_verdict(
+                "HOLD" if vote == "HOLD" else "SKIPPED_THRESHOLD",
+                "" if vote == "HOLD" else f"conviction {conviction:.2f} < {MIN_CONVICTION:.2f}",
+            )
             return
 
         if news_ctx.get("avoid_trading") and conviction < 0.80:
             _log(f"AVOID TRADING activo: {news_ctx.get('avoid_reason')}", "WARN")
             self._record_shadow(symbol, vote, conviction, market_data,
                                 executed=False, blocked_reason="avoid_trading")
+            await broadcast_decision_verdict("AVOID", news_ctx.get("avoid_reason", "") or "noticia adversa")
             return
 
         # Audit EVERY BUY/SELL that reaches this point (vote is LONG/SHORT and
@@ -1050,6 +1104,11 @@ class TradingOrchestrator:
                 if not approved:
                     _log(f"Claude audit BLOCK: {reason}", "WARN")
                     await broadcast_error(f"Claude audit rejected: {reason}")
+                    self._record_shadow(
+                        symbol, vote, conviction, market_data,
+                        executed=False, blocked_reason="vetoed",
+                    )
+                    await broadcast_decision_verdict("VETOED", reason)
                     return
             except Exception as e:
                 # Fail-open: if Claude is out of tokens or the auditor fails/times out,
@@ -1057,14 +1116,20 @@ class TradingOrchestrator:
                 _log(f"Claude audit unavailable; allowing trade (fail-open): {e}", "WARN")
                 await broadcast_error(f"Claude audit unavailable — trade allowed: {e}")
 
+        self._last_exec_verdict = None
         prev_active = self._active_trade_id
         await self._execute_order(symbol, vote, conviction, market_data, balance, [signal])
         executed = self._active_trade_id is not None and self._active_trade_id != prev_active
+        if executed:
+            verdict, vreason = "EXECUTED", ""
+        else:
+            verdict, vreason = self._last_exec_verdict or ("BLOCKED", "")
         self._record_shadow(
             symbol, vote, conviction, market_data,
             executed=executed,
-            blocked_reason=None if executed else "blocked",
+            blocked_reason=None if executed else verdict.lower(),
         )
+        await broadcast_decision_verdict(verdict, vreason)
 
     def _record_shadow(
         self, symbol: str, vote: str, confidence: float, market_data: dict,
@@ -1517,6 +1582,7 @@ class TradingOrchestrator:
                 if self.risk.state.open_positions > 0:
                     self.risk.state.open_positions -= 1
                 self._verify_close_consistency(trade, exit_price, exit_reason, pnl)
+                await self._register_close_for_cooldown(exit_reason)
                 await broadcast_position_update(None)
                 _log(
                     f"[CheckClosed] Trade #{trade['id']} cerrado: {exit_reason} "
@@ -1584,10 +1650,12 @@ class TradingOrchestrator:
         # Una sola posición activa a la vez
         if self._active_trade_id is not None:
             _log(f"[Futures] Trade #{self._active_trade_id} ya activo — bloqueando nueva ejecución", "WARN")
+            self._last_exec_verdict = ("BLOCKED", "ya hay una posición activa")
             return
         open_trades = self.store.get_open_trades()
         if open_trades:
             _log(f"[Futures] {len(open_trades)} trade(s) abierto(s) en DB — bloqueando", "WARN")
+            self._last_exec_verdict = ("BLOCKED", "trade abierto en DB")
             return
 
         # BUY → LONG, SELL → SHORT
@@ -1600,6 +1668,7 @@ class TradingOrchestrator:
         qty = self.futures._adjust_quantity(symbol, round(position_usdt / price, 6))
         if qty <= 0:
             _log(f"[Futures] Qty ajustada = 0, saltando.", "WARN")
+            self._last_exec_verdict = ("BLOCKED", "qty ajustada = 0")
             return
 
         # Calcular precios — TP adaptativo al soporte/resistencia (banda de Bollinger),
@@ -1622,6 +1691,7 @@ class TradingOrchestrator:
         if not approved:
             _log(f"[Futures] RiskManager BLOQUEÓ: {reason}", "WARN")
             await broadcast_error(f"Futures order blocked: {reason}")
+            self._last_exec_verdict = ("BLOCKED_RISK", reason)
             return
 
         try:
@@ -2061,6 +2131,7 @@ class TradingOrchestrator:
             self._active_trade_id, self._cycle, exit_price, exit_reason, realized_pnl=realized_pnl,
         )
         self._verify_close_consistency(active, exit_price, exit_reason, pnl)
+        await self._register_close_for_cooldown(exit_reason)
         self.risk.state.open_positions = max(0, self.risk.state.open_positions - 1)
         self._active_trade_id = None
         self._sl_order_id = None

@@ -188,6 +188,20 @@ GPT web-search market context (SECONDARY — technicals lead):
 - Catalyst evidence: {context.get('catalyst_evidence', '') or 'none'}
 """
 
+        # P1.4 token-diet: las series con floats completos queman cientos de tokens por ciclo sin
+        # aportar señal. Precios BTC a enteros, volúmenes a 1 decimal — mismo contenido, menos tokens
+        # (y menos presión sobre el presupuesto de razonamiento → menor riesgo de truncamiento).
+        def _ri(seq):  # enteros (precios)
+            return [int(round(float(x))) for x in seq if x is not None]
+
+        def _rv(seq):  # 1 decimal (volúmenes)
+            return [round(float(x), 1) for x in seq if x is not None]
+
+        closes_s  = _ri(closes[-24:])
+        highs_s   = _ri(highs[-24:])
+        lows_s    = _ri(lows[-24:])
+        volumes_s = _rv(volumes[-24:])
+
         prompt = f"""Make one final trading decision for {symbol} perpetual futures.
 
 Current market:
@@ -199,10 +213,10 @@ Current market:
 - Bollinger upper/lower: {market_data.get('bb_upper')} / {market_data.get('bb_lower')}
 - 24h high/low/change: {market_data.get('high_24h')} / {market_data.get('low_24h')} / {market_data.get('change_24h_pct')}%
 - Basis vs index: {market_data.get('basis_pct')}%
-- Recent closes: {closes[-24:]}
-- Recent highs: {highs[-24:]}
-- Recent lows: {lows[-24:]}
-- Recent volumes: {volumes[-24:]}
+- Recent closes: {closes_s}
+- Recent highs: {highs_s}
+- Recent lows: {lows_s}
+- Recent volumes: {volumes_s}
 
 Derivatives positioning:
 - Funding rate: {market_data.get('funding_rate', 0.0):+.4f}% per 8h

@@ -257,6 +257,14 @@ def init_db():
                 resolved_ts    TEXT,
                 horizon_hours  INTEGER NOT NULL DEFAULT 48
             );
+
+            -- Estado de riesgo runtime (P1.5): racha de SLs + cooldown, persiste entre reinicios.
+            CREATE TABLE IF NOT EXISTS risk_runtime (
+                id             INTEGER PRIMARY KEY CHECK (id = 1),
+                loss_streak    INTEGER NOT NULL DEFAULT 0,
+                cooldown_until TEXT,
+                updated_ts     TEXT
+            );
         """)
         _migrate(con)
 
@@ -387,6 +395,29 @@ class StateStore:
             "pending": pending, "executed": executed,
             "by_direction": {r["vote"]: r["c"] for r in by_dir},
         }
+
+    # ── Cooldown / racha de SLs (P1.5) ────────────────────────────────────────
+
+    def save_cooldown_state(self, loss_streak: int, cooldown_until: str | None):
+        with _conn() as con:
+            con.execute(
+                """INSERT INTO risk_runtime (id, loss_streak, cooldown_until, updated_ts)
+                   VALUES (1, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       loss_streak=excluded.loss_streak,
+                       cooldown_until=excluded.cooldown_until,
+                       updated_ts=excluded.updated_ts""",
+                (int(loss_streak), cooldown_until, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def get_cooldown_state(self) -> dict:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT loss_streak, cooldown_until FROM risk_runtime WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return {"loss_streak": 0, "cooldown_until": None}
+        return {"loss_streak": row["loss_streak"], "cooldown_until": row["cooldown_until"]}
 
     # ── Phase 1 Analyses (pipeline) ───────────────────────────────────────────
 

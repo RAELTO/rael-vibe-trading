@@ -119,7 +119,9 @@ Rules:
                 include=["web_search_call.action.sources"],
                 input=prompt,
             )
-            return self._parse_context(response.output_text)
+            ctx = self._parse_context(response.output_text)
+            ctx["news_source_route"] = "openai"
+            return ctx
         except Exception as e:
             print(f"[WebSearchAgent] Error en GPT web search ({self.model}): {e}", flush=True)
             if self.fallback_client:
@@ -149,7 +151,9 @@ Rules:
                 {"role": "user", "content": prompt},
             ],
         )
-        return self._parse_context(response.choices[0].message.content)
+        ctx = self._parse_context(response.choices[0].message.content)
+        ctx["news_source_route"] = "openai"
+        return ctx
 
     def _analyze_with_openrouter_search(self, prompt: str) -> dict:
         """
@@ -168,7 +172,9 @@ Rules:
                 {"role": "user", "content": prompt},
             ],
         )
-        return self._parse_context(response.choices[0].message.content)
+        ctx = self._parse_context(response.choices[0].message.content)
+        ctx["news_source_route"] = "mimo-fallback"
+        return ctx
 
     def _parse_context(self, text: str) -> dict:
         text = (text or "").strip()
@@ -222,6 +228,7 @@ Rules:
             "catalyst_direction": "NEUTRAL",
             "catalyst_veracity": 0.0,
             "catalyst_evidence": "",
+            "news_source_route": "default",
             "sources": [],
         }
 

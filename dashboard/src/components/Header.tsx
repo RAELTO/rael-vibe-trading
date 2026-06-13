@@ -1,5 +1,5 @@
 import { Badge } from "./Badge";
-import type { SystemStatus, RiskHealth } from "../types";
+import type { SystemStatus, RiskHealth, CooldownState } from "../types";
 
 interface HeaderProps {
   connected: boolean;
@@ -7,6 +7,7 @@ interface HeaderProps {
   cycle: number;
   riskHealth: RiskHealth;
   tradingMode: "FUTURES" | "SPOT";
+  cooldown?: CooldownState;
 }
 
 function LiveIndicator({ connected }: { connected: boolean }) {
@@ -30,7 +31,7 @@ function LiveIndicator({ connected }: { connected: boolean }) {
   );
 }
 
-export function Header({ connected, status, cycle, riskHealth, tradingMode }: HeaderProps) {
+export function Header({ connected, status, cycle, riskHealth, tradingMode, cooldown }: HeaderProps) {
   const statusVariant = status === "running" ? "running" : status === "stopped" ? "stopped" : "idle";
   const riskVariantMap: Record<RiskHealth, "healthy" | "moderate" | "high" | "critical"> = {
     HEALTHY: "healthy", MODERATE: "moderate", HIGH_RISK: "high", CRITICAL: "critical",
@@ -75,6 +76,19 @@ export function Header({ connected, status, cycle, riskHealth, tradingMode }: He
           <Badge variant={tradingMode === "FUTURES" ? "futures" : "spot"}>{tradingMode}</Badge>
           <Badge variant={riskVariantMap[riskHealth]}>{riskHealth.replace("_", " ")}</Badge>
           <Badge variant={statusVariant}>{status}</Badge>
+          {cooldown?.active && (
+            <span
+              title={`${cooldown.loss_streak} SL consecutivos — entradas nuevas pausadas`}
+              className="text-[10px] font-mono"
+              style={{
+                fontWeight: 700, color: "#f0a030",
+                border: "1px solid #f0a03055", background: "#f0a03015",
+                padding: "2px 8px", borderRadius: 5, letterSpacing: "0.5px", whiteSpace: "nowrap",
+              }}
+            >
+              ⏸ COOLDOWN {cooldown.remaining}
+            </span>
+          )}
           {cycle > 0 && (
             <span
               className="text-[11px] font-mono tabular-nums"

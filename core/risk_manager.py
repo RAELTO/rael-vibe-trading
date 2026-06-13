@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -22,6 +22,8 @@ class RiskState:
     daily_loss_date:    str   = field(default_factory=lambda: date.today().isoformat())
     open_positions:     int   = 0
     total_trades_today: int   = 0
+    loss_streak:        int   = 0              # SL/LIQUIDATED consecutivos (P1.5)
+    cooldown_until:     Optional[str] = None   # ISO UTC; entradas nuevas bloqueadas hasta esta hora
 
 
 class RiskManager:
@@ -40,7 +42,55 @@ class RiskManager:
         self.min_reward_risk   = float(os.getenv("MIN_REWARD_RISK", "1.2"))
         self.demo_budget       = float(os.getenv("TRADING_BUDGET_USDT", "1000.0"))  # presupuesto operativo
         self.max_open_positions = 3
+        # Cooldown por racha de SLs (P1.5): tras N SL consecutivos, bloquear entradas nuevas H horas.
+        # 0 horas = desactivado. Lo pidió explícito el daily review tras la racha −2.
+        self.loss_streak_limit = int(os.getenv("FUTURES_LOSS_STREAK_LIMIT", "2"))
+        self.cooldown_hours    = float(os.getenv("FUTURES_COOLDOWN_HOURS", "24"))
         self.state = RiskState(portfolio_balance=self.demo_budget)
+
+    # ── Cooldown por racha de SLs (P1.5) ──────────────────────────────────────
+
+    def register_close(self, exit_reason: str) -> bool:
+        """
+        Actualiza la racha de SLs consecutivos al cerrar un trade. Devuelve True si ACTIVÓ
+        el cooldown en esta llamada (para registrar system_event una sola vez).
+        """
+        reason = (exit_reason or "").upper()
+        activated = False
+        if reason in ("SL", "LIQUIDATED"):
+            self.state.loss_streak += 1
+            if (
+                self.cooldown_hours > 0
+                and self.loss_streak_limit > 0
+                and self.state.loss_streak >= self.loss_streak_limit
+                and not self.state.cooldown_until
+            ):
+                until = datetime.now(timezone.utc) + timedelta(hours=self.cooldown_hours)
+                self.state.cooldown_until = until.isoformat()
+                activated = True
+        elif reason == "TP":
+            # Un cierre ganador rompe la racha y libera cualquier cooldown.
+            self.state.loss_streak = 0
+            self.state.cooldown_until = None
+        # Motivos no concluyentes (OFFLINE/MANUAL/UNKNOWN) no alteran la racha.
+        return activated
+
+    def in_cooldown(self) -> tuple[bool, str]:
+        """(activo, tiempo_restante_legible). Auto-expira cuando se cumple cooldown_until."""
+        if not self.state.cooldown_until:
+            return False, ""
+        try:
+            until = datetime.fromisoformat(self.state.cooldown_until)
+        except (ValueError, TypeError):
+            return False, ""
+        now = datetime.now(timezone.utc)
+        if now >= until:
+            self.state.cooldown_until = None   # expiró
+            return False, ""
+        rem = until - now
+        hrs = int(rem.total_seconds() // 3600)
+        mins = int((rem.total_seconds() % 3600) // 60)
+        return True, f"{hrs}h{mins:02d}m"
 
     # ── Estado ────────────────────────────────────────────────────────────────
 
@@ -135,6 +185,15 @@ class RiskManager:
         - Liquidation price debe estar al menos 2× más lejos que el SL
         """
         balance = self.state.portfolio_balance
+
+        # Cooldown por racha de SLs (P1.5): tras N SL consecutivos no se abren entradas nuevas.
+        # No afecta la gestión de una posición ya abierta (eso lo maneja el PositionMonitor).
+        cooling, remaining = self.in_cooldown()
+        if cooling:
+            return False, (
+                f"Cooldown activo tras {self.state.loss_streak} SL consecutivos "
+                f"— {remaining} restantes (FUTURES_COOLDOWN_HOURS)"
+            )
 
         # Confianza mínima
         if order.confidence < self.min_consensus:
