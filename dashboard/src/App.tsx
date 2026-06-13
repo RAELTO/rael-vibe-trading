@@ -10,6 +10,7 @@ import { NewsPanel } from "./components/NewsPanel";
 import { StrategyPanel } from "./components/StrategyPanel";
 import { MarketChart } from "./components/MarketChart";
 import { PnLChart } from "./components/PnLChart";
+import { ShadowPanel } from "./components/ShadowPanel";
 import { ErrorLog } from "./components/ErrorLog";
 import { HardStopBanner } from "./components/HardStopBanner";
 import { MobileTabBar, type MobileTab } from "./components/MobileTabBar";
@@ -81,6 +82,7 @@ function DesktopMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>
         <MarketChart symbol={symbol} leverage={state.active_position?.leverage} cols={4} />
       </div>
       <PnLChart />
+      <ShadowPanel />
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={3} />
       <StrategyPanel review={state.strategy_review} lessons={state.lessons} />
       {state.errors.length > 0 && <ErrorLog errors={state.errors} />}
@@ -95,6 +97,7 @@ function TabletMain({ state, symbol }: { state: ReturnType<typeof useWebSocket>[
       <DecisionPanel decision={state.last_decision} tradingMode={state.trading_mode} intervalSeconds={state.config?.analysis_interval_seconds} activePosition={state.active_position} />
       <MarketChart symbol={symbol} leverage={state.active_position?.leverage} cols={2} />
       <PnLChart />
+      <ShadowPanel />
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={1} />
       <StrategyPanel review={state.strategy_review} lessons={state.lessons} />
       {state.errors.length > 0 && <ErrorLog errors={state.errors} />}
@@ -144,6 +147,7 @@ function MobileContent({ tab, state, symbol }: {
   if (tab === "pipeline") return (
     <MobileScrollArea>
       <AgentVotesPanel votes={state.agent_votes} tradingMode={state.trading_mode} cols={1} />
+      <ShadowPanel />
       <StrategyPanel review={state.strategy_review} lessons={state.lessons} />
       {state.errors.length > 0 && <ErrorLog errors={state.errors} />}
     </MobileScrollArea>

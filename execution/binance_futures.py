@@ -476,6 +476,24 @@ class BinanceFuturesClient:
             return self._round_price("BTCUSDT", price * (1 - pct))
         return self._round_price("BTCUSDT", price * (1 + pct))
 
+    def get_klines_since(self, symbol: str, interval: str, start_ms: int, limit: int = 200) -> list[dict]:
+        """
+        Klines OHLC desde `start_ms` (epoch ms). Usado por el harness de shadow signals (P0.2)
+        para reconstruir qué tocó primero (TP o SL) tras una señal. Devuelve dicts con
+        time/high/low/close ordenados por tiempo ascendente. Lista vacía si falla.
+        """
+        try:
+            raw = self.client.futures_klines(
+                symbol=symbol, interval=interval, startTime=int(start_ms), limit=limit,
+            ) or []
+            return [
+                {"time": int(k[0]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4])}
+                for k in raw
+            ]
+        except Exception as e:
+            print(f"[Futures] get_klines_since error: {type(e).__name__}: {e}", flush=True)
+            return []
+
     def calculate_tp(self, side: str, price: float, pct: float = 0.025) -> float:
         """TP ajustado para futures (default 2.5% vs 4% en spot)."""
         if side == "LONG":

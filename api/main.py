@@ -217,6 +217,23 @@ def get_pnl_history(limit: int = 50):
         return {"error": str(e), "points": []}
 
 
+@app.get("/shadow/calibration")
+def get_shadow_calibration():
+    """
+    Harness contrafactual (P0.2): resumen + curva de calibración (tasa TP-first por bucket
+    de confianza) sobre todas las señales del decisor, ejecutadas o no.
+    """
+    try:
+        from core.state_store import StateStore
+        store = StateStore()
+        return {
+            "summary":     store.get_shadow_summary(),
+            "calibration": store.get_shadow_calibration(),
+        }
+    except Exception as e:
+        return {"error": str(e), "summary": {}, "calibration": []}
+
+
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")

@@ -98,6 +98,7 @@ TRADING_HOURS_START   = int(os.getenv("TRADING_HOURS_START", "8"))
 TRADING_HOURS_END     = int(os.getenv("TRADING_HOURS_END", "20"))
 TRADING_TIMEZONE      = os.getenv("TRADING_TIMEZONE", "UTC")
 OFF_HOURS_RECHECK     = 300   # re-chequear cada 5 min cuando estamos fuera de horario
+SHADOW_RESOLVE_INTERVAL = int(os.getenv("SHADOW_RESOLVE_INTERVAL", "1800"))  # P0.2: resolver shadow signals cada 30 min
 MARKET_REFRESH        = int(os.getenv("MARKET_REFRESH_SECONDS", "30"))   # refresco de precio/indicadores para el dashboard (24/7)
 
 # Trailing stop — solo activo en modo FUTURES
@@ -1015,10 +1016,17 @@ class TradingOrchestrator:
                 _log(f"Nueva época. Conservative: {epoch_result.get('conservative')}", "WARN")
 
         if vote not in ("BUY", "SELL") or conviction < MIN_CONVICTION:
+            self._record_shadow(
+                symbol, vote, conviction, market_data,
+                executed=False,
+                blocked_reason=None if vote == "HOLD" else "below_threshold",
+            )
             return
 
         if news_ctx.get("avoid_trading") and conviction < 0.80:
             _log(f"AVOID TRADING activo: {news_ctx.get('avoid_reason')}", "WARN")
+            self._record_shadow(symbol, vote, conviction, market_data,
+                                executed=False, blocked_reason="avoid_trading")
             return
 
         # Audit EVERY BUY/SELL that reaches this point (vote is LONG/SHORT and
@@ -1049,7 +1057,48 @@ class TradingOrchestrator:
                 _log(f"Claude audit unavailable; allowing trade (fail-open): {e}", "WARN")
                 await broadcast_error(f"Claude audit unavailable — trade allowed: {e}")
 
+        prev_active = self._active_trade_id
         await self._execute_order(symbol, vote, conviction, market_data, balance, [signal])
+        executed = self._active_trade_id is not None and self._active_trade_id != prev_active
+        self._record_shadow(
+            symbol, vote, conviction, market_data,
+            executed=executed,
+            blocked_reason=None if executed else "blocked",
+        )
+
+    def _record_shadow(
+        self, symbol: str, vote: str, confidence: float, market_data: dict,
+        executed: bool, blocked_reason: str | None,
+    ):
+        """
+        Harness contrafactual (P0.2): registra TODA señal del decisor. Para BUY/SELL guarda el
+        SL/TP que se habría usado (mismos `calculate_sl`/`calculate_adaptive_tp` que la ejecución
+        real) para resolver luego TP-first/SL-first contra klines. HOLD se guarda sin resolver.
+        No debe romper nunca el ciclo de decisión.
+        """
+        try:
+            price = market_data.get("price")
+            if not price:
+                return
+            if vote in ("BUY", "SELL") and self.trading_mode == "FUTURES":
+                side = "LONG" if vote == "BUY" else "SHORT"
+                sl = self.futures.calculate_sl(side, price)
+                tp = self.futures.calculate_adaptive_tp(side, price, market_data)
+                self.store.save_shadow_signal(
+                    cycle=self._cycle, symbol=symbol, vote=vote, confidence=confidence,
+                    entry_price=price, sl_price=sl, tp_price=tp,
+                    executed=1 if executed else 0, blocked_reason=blocked_reason,
+                    status="PENDING",
+                )
+            else:
+                # HOLD (o spot): solo vote+confidence para la curva de calibración; no se resuelve.
+                self.store.save_shadow_signal(
+                    cycle=self._cycle, symbol=symbol, vote=vote, confidence=confidence,
+                    entry_price=price, executed=1 if executed else 0,
+                    blocked_reason=blocked_reason, status="HOLD",
+                )
+        except Exception as e:
+            _log(f"[Shadow] no se pudo registrar la señal: {e}", "WARN")
 
     async def _run_pipeline_cycle(
         self,
@@ -2329,7 +2378,7 @@ class TradingOrchestrator:
             _log(f"Error en primer ciclo de noticias: {e}", "WARN")
 
         # Lanzar el resto de loops (api_task ya está corriendo)
-        _log("Iniciando loops paralelos: News + Trading + Reconnect + Monitor + MarketRefresh", "OK")
+        _log("Iniciando loops paralelos: News + Trading + Reconnect + Monitor + MarketRefresh + Shadow", "OK")
         tasks = [
             api_task,
             asyncio.create_task(self.run_news_loop()),
@@ -2337,6 +2386,7 @@ class TradingOrchestrator:
             asyncio.create_task(self.run_reconnect_loop()),
             asyncio.create_task(self.run_position_monitor_loop()),
             asyncio.create_task(self.run_market_refresh_loop()),
+            asyncio.create_task(self.run_shadow_resolution_loop()),
         ]
         try:
             await asyncio.gather(*tasks)
@@ -2357,6 +2407,66 @@ class TradingOrchestrator:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         _log("Apagado completo.", "OK")
+
+    async def run_shadow_resolution_loop(self):
+        """
+        P0.2: cada SHADOW_RESOLVE_INTERVAL resuelve las shadow signals PENDING contra klines 15m
+        (qué tocó primero, TP o SL). Corre 24/7, independiente del horario de trading.
+        """
+        _log(f"Shadow resolution loop iniciado (cada {SHADOW_RESOLVE_INTERVAL}s).", "INFO")
+        while True:
+            await asyncio.sleep(SHADOW_RESOLVE_INTERVAL)
+            try:
+                await asyncio.to_thread(self._resolve_shadow_signals)
+            except Exception as e:
+                _log(f"[Shadow] resolución falló: {e}", "WARN")
+
+    def _resolve_shadow_signals(self):
+        """Determina TP_FIRST / SL_FIRST / EXPIRED para cada señal direccional pendiente."""
+        pending = self.store.get_pending_shadow_signals(limit=200)
+        if not pending:
+            return
+        now = datetime.now(timezone.utc)
+        resolved_count = 0
+        for s in pending:
+            sl, tp = s.get("sl_price"), s.get("tp_price")
+            if sl is None or tp is None:
+                continue
+            try:
+                ts = datetime.fromisoformat(s["ts"])
+            except (ValueError, TypeError):
+                continue
+            start_ms = int(ts.timestamp() * 1000)
+            horizon = int(s.get("horizon_hours", 48) or 48)
+            klines = self.futures.get_klines_since(
+                s["symbol"], "15m", start_ms, limit=min(1000, horizon * 4 + 4),
+            )
+            is_long = s["vote"] == "BUY"
+            outcome = None
+            for c in klines:
+                if c["time"] < start_ms:   # ignorar la vela de entrada (parcialmente previa)
+                    continue
+                if is_long:
+                    hit_tp, hit_sl = c["high"] >= tp, c["low"] <= sl
+                else:
+                    hit_tp, hit_sl = c["low"] <= tp, c["high"] >= sl
+                if hit_tp and hit_sl:
+                    outcome = "SL_FIRST"   # ambos en la misma vela ⇒ conservador
+                    break
+                if hit_tp:
+                    outcome = "TP_FIRST"
+                    break
+                if hit_sl:
+                    outcome = "SL_FIRST"
+                    break
+            if outcome:
+                self.store.resolve_shadow_signal(s["id"], outcome)
+                resolved_count += 1
+            elif (now - ts).total_seconds() / 3600.0 >= horizon:
+                self.store.resolve_shadow_signal(s["id"], "EXPIRED")
+                resolved_count += 1
+        if resolved_count:
+            _log(f"[Shadow] {resolved_count} señal(es) resuelta(s) de {len(pending)} pendientes.", "OK")
 
     async def _serve_api(self):
         """Arranca el servidor FastAPI dentro del mismo event loop."""

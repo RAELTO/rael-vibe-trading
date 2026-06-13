@@ -63,6 +63,8 @@ Prioridades: **P0** = corregir/medir antes de tocar nada más · **P1** = mayor 
 
 **Aceptación:** tras 2 semanas en el VPS hay >200 señales resueltas y el dashboard muestra la curva de calibración.
 
+**✅ HECHO (backend):** tabla `shadow_signals` (auto-creada por `init_db`, sin migración manual); métodos `save_shadow_signal`/`get_pending_shadow_signals`/`resolve_shadow_signal`/`get_shadow_calibration`/`get_shadow_summary` en `state_store.py`; registro de TODA señal del decisor en `_record_shadow` (3 puntos de salida del ciclo: sub-umbral, avoid_trading, ejecución — `executed` detectado por `_active_trade_id`); `binance_futures.get_klines_since`; loop `run_shadow_resolution_loop` (cada `SHADOW_RESOLVE_INTERVAL`=1800s, 24/7) que determina TP_FIRST/SL_FIRST/EXPIRED contra klines 15m (misma vela ⇒ SL_FIRST conservador); endpoint `GET /shadow/calibration`. Probado end-to-end. **✅ Panel en el dashboard** (`ShadowPanel.tsx`): resumen (señales/pending/resueltas/ejecutadas), barra de sesgo direccional BUY/SELL (con alerta ⚠ si ≥80% a un lado — vigila el 8/8 SHORT), y la curva de TP-first rate por bucket de confianza. Integrado en desktop/tablet (tras PnLChart) y en la tab móvil "pipeline". **P0.2 COMPLETO.**
+
 ---
 
 ## P0.3 — ✅ HECHO: JSON truncado del decisor (reasoning + JSON > max_tokens)
@@ -221,7 +223,7 @@ Mecánico, sin cambios de comportamiento; hacerlo en un PR aparte de cualquier c
 | Fase | Items | Razón |
 |---|---|---|
 | 0 | ✅ **P0.3** (truncamiento DeepSeek) | Hecho — desbloqueaba decisiones limpias |
-| 1 | **P0.1** (bug TP/SL) + **P0.2** (shadow harness) + **P1.8** (veredicto en dashboard) | Sin datos limpios y sin medición, el resto es fe; P1.8 es la versión en vivo de lo que P0.2 guarda en DB |
+| 1 | ✅ **P0.1** (bug TP/SL) + ✅ **P0.2** (shadow harness, backend+dashboard) + **P1.8** (veredicto en dashboard, pendiente) | Sin datos limpios y sin medición, el resto es fe; P1.8 es la versión en vivo de lo que P0.2 guarda en DB |
 | 2 | **P1.5** (cooldown) + **P1.6** (gate shorts) | Riesgo: tapan el hueco que el daily review ya señaló, son baratos y no dependen de nada |
 | 3 | **P1.3** (cache) + **P1.4** (multi-timeframe; el "token diet" se puede adelantar a la fase 1) | Mejor input para el decisor, costo menor por ciclo |
 | 4 | **P1.1** (razonamiento) y/o **P1.2** (self-consistency) | El salto de calidad del decisor — validar con el harness de la fase 1 |

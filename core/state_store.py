@@ -237,6 +237,26 @@ def init_db():
                 summary      TEXT,                  -- 2-4 oraciones
                 adjustments  TEXT                   -- JSON list de ajustes sugeridos
             );
+
+            -- Shadow signals (harness contrafactual, P0.2): TODA señal direccional
+            -- (ejecutada o no) con el SL/TP que se habría usado, para medir la tasa real
+            -- de TP-first por bucket de confianza. HOLD se guarda con status='HOLD' (no se resuelve).
+            CREATE TABLE IF NOT EXISTS shadow_signals (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts             TEXT    NOT NULL,          -- UTC ISO con +00:00
+                cycle          INTEGER,
+                symbol         TEXT    NOT NULL DEFAULT 'BTCUSDT',
+                vote           TEXT    NOT NULL,          -- BUY | SELL | HOLD
+                confidence     REAL    NOT NULL,
+                executed       INTEGER NOT NULL DEFAULT 0,-- 1 si se convirtió en trade real
+                blocked_reason TEXT,                      -- below_threshold | avoid_trading | blocked | NULL
+                entry_price    REAL    NOT NULL,
+                sl_price       REAL,
+                tp_price       REAL,
+                status         TEXT    NOT NULL DEFAULT 'PENDING', -- PENDING | TP_FIRST | SL_FIRST | EXPIRED | HOLD
+                resolved_ts    TEXT,
+                horizon_hours  INTEGER NOT NULL DEFAULT 48
+            );
         """)
         _migrate(con)
 
@@ -289,6 +309,84 @@ class StateStore:
                 "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Shadow signals (harness contrafactual, P0.2) ──────────────────────────
+
+    def save_shadow_signal(
+        self, cycle: int, symbol: str, vote: str, confidence: float, entry_price: float,
+        sl_price: float | None = None, tp_price: float | None = None,
+        executed: int = 0, blocked_reason: str | None = None,
+        status: str = "PENDING", horizon_hours: int = 48,
+    ):
+        with _conn() as con:
+            con.execute(
+                """INSERT INTO shadow_signals
+                   (ts, cycle, symbol, vote, confidence, executed, blocked_reason,
+                    entry_price, sl_price, tp_price, status, horizon_hours)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(), cycle, symbol, vote,
+                    float(confidence), int(executed), blocked_reason,
+                    entry_price, sl_price, tp_price, status, horizon_hours,
+                ),
+            )
+
+    def get_pending_shadow_signals(self, limit: int = 200) -> list[dict]:
+        """Señales direccionales aún sin resolver (para el loop de resolución)."""
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM shadow_signals WHERE status='PENDING' "
+                "AND vote IN ('BUY','SELL') ORDER BY id ASC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_shadow_signal(self, signal_id: int, status: str, resolved_ts: str | None = None):
+        with _conn() as con:
+            con.execute(
+                "UPDATE shadow_signals SET status=?, resolved_ts=? WHERE id=?",
+                (status, resolved_ts or datetime.now(timezone.utc).isoformat(), signal_id),
+            )
+
+    def get_shadow_calibration(self) -> list[dict]:
+        """Tasa de TP-first por bucket de confianza (ancho 0.05) sobre señales resueltas."""
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT confidence, status FROM shadow_signals "
+                "WHERE vote IN ('BUY','SELL') AND status IN ('TP_FIRST','SL_FIRST','EXPIRED')"
+            ).fetchall()
+        buckets: dict[str, dict] = {}
+        for r in rows:
+            lo = int(r["confidence"] * 20) / 20.0
+            key = f"{lo:.2f}-{lo + 0.05:.2f}"
+            d = buckets.setdefault(key, {"bucket": key, "n": 0, "tp_first": 0, "sl_first": 0, "expired": 0})
+            d["n"] += 1
+            if r["status"] == "TP_FIRST":
+                d["tp_first"] += 1
+            elif r["status"] == "SL_FIRST":
+                d["sl_first"] += 1
+            else:
+                d["expired"] += 1
+        out = []
+        for key in sorted(buckets):
+            d = buckets[key]
+            resolved = d["tp_first"] + d["sl_first"]
+            d["tp_first_rate"] = round(d["tp_first"] / resolved, 3) if resolved else None
+            out.append(d)
+        return out
+
+    def get_shadow_summary(self) -> dict:
+        with _conn() as con:
+            total       = con.execute("SELECT COUNT(*) FROM shadow_signals").fetchone()[0]
+            directional = con.execute("SELECT COUNT(*) FROM shadow_signals WHERE vote IN ('BUY','SELL')").fetchone()[0]
+            resolved    = con.execute("SELECT COUNT(*) FROM shadow_signals WHERE status IN ('TP_FIRST','SL_FIRST','EXPIRED')").fetchone()[0]
+            pending     = con.execute("SELECT COUNT(*) FROM shadow_signals WHERE status='PENDING'").fetchone()[0]
+            executed    = con.execute("SELECT COUNT(*) FROM shadow_signals WHERE executed=1").fetchone()[0]
+            by_dir      = con.execute("SELECT vote, COUNT(*) c FROM shadow_signals WHERE vote IN ('BUY','SELL') GROUP BY vote").fetchall()
+        return {
+            "total": total, "directional": directional, "resolved": resolved,
+            "pending": pending, "executed": executed,
+            "by_direction": {r["vote"]: r["c"] for r in by_dir},
+        }
 
     # ── Phase 1 Analyses (pipeline) ───────────────────────────────────────────
 
