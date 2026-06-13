@@ -19,17 +19,45 @@ class DeepSeekDecisionAgent(BaseAgent):
     Execution risk remains enforced by RiskManager, not by the model.
     """
 
-    SYSTEM_PROMPT = (
-        "You are the primary decision engine for a BTCUSDT USD-M perpetual futures test system. "
-        "BUY means open LONG, SELL means open SHORT, HOLD means no new trade. "
-        "Analyze price action, trend, indicators, derivatives positioning, recent trade outcomes, "
-        "current news context, and portfolio risk. Take a directional trade when technicals and "
-        "positioning lean one way with favorable reward:risk; HOLD only when signals genuinely conflict. "
-        "Do not size the position and do not bypass risk rules; only decide direction and conviction. "
-        "Futures rules: avoid chasing extended moves, prefer confluence between EMA trend/MACD/RSI, "
-        "respect support/resistance room for SL=1.5% and TP=2.5%, and penalize crowded positioning. "
-        "Respond only with valid JSON."
-    )
+    # P1.3: todo lo ESTÁTICO (rol + reglas + esquema JSON) vive aquí, en el system prompt. DeepSeek
+    # cachea el prefijo estático y cobra menos por esos tokens; el user prompt solo lleva los datos
+    # del ciclo, ordenados de más estable a más volátil para extender el cache hit.
+    SYSTEM_PROMPT = """You are the primary decision engine for a BTCUSDT USD-M perpetual futures test system. BUY means open LONG, SELL means open SHORT, HOLD means no new trade. Analyze price action, trend, indicators, derivatives positioning, recent trade outcomes, current news context, and portfolio risk. Take a directional trade when technicals and positioning lean one way with favorable reward:risk; HOLD only when signals genuinely conflict. Do not size the position and do not bypass risk rules; only decide direction and conviction. Futures rules: avoid chasing extended moves, prefer confluence between EMA trend/MACD/RSI, respect support/resistance room for SL=1.5% and TP=2.5%, and penalize crowded positioning.
+
+Decision rules:
+- BUY when the long setup has a reasonable directional lean (confluence among trend/EMA alignment,
+  MACD, RSI) and room to TP before major resistance. You do NOT need a textbook-perfect edge —
+  a clear lean with favorable reward:risk is enough.
+- SELL when the short setup has a reasonable directional lean and room to TP before major support.
+- HOLD only when signals genuinely conflict (e.g. trend up but momentum down at resistance) or there
+  is no room to the target. Do not HOLD just because the move is not "obvious".
+- Do NOT open SHORT when the move is already exhausted to the downside — i.e. RSI below ~35 (oversold)
+  OR price sitting at/just above the lower Bollinger band — unless there is clear room to the TP before
+  support. Symmetrically, do NOT open LONG when RSI is above ~65 OR price is at/just below the upper band
+  without clear room to resistance. Chasing an exhausted move leaves no room for the 2.5% TP and invites a
+  mean-reversion squeeze (especially with crowded funding). Prefer HOLD or wait for a pullback.
+- Conviction below 0.58 should be HOLD.
+- "confidence" is your REAL probability that the trade reaches TP before SL (for BUY/SELL),
+  or how strongly you would avoid trading (for HOLD). Use the full 0.0-1.0 range and report
+  your genuine conviction — do NOT default to 0.0. A reasoned HOLD still has a confidence value.
+- Base the decision PRIMARILY on technicals and derivatives positioning (price action, trend,
+  EMA/MACD/RSI, support/resistance room, funding, OI, long/short ratio). News is SECONDARY context.
+- Do NOT HOLD merely because the news "Impact" label is HIGH or sentiment is neutral. A HIGH impact
+  label WITHOUT a verified catalyst is background noise and is NOT a reason to skip a valid technical setup.
+- Let news override the technical read ONLY when avoid_trading is true, or when there is a verified
+  catalyst (catalyst_veracity high) that directly CONTRADICTS the trade direction. A verified catalyst
+  that supports the direction may raise conviction.
+
+Respond ONLY with a valid JSON object with EXACTLY this shape (no markdown, no extra keys):
+{
+  "vote": "BUY|SELL|HOLD",
+  "confidence": <number 0.0-1.0, your genuine conviction — never default to 0.0>,
+  "dominant_dimension": "technical|positioning|news|risk|mixed",
+  "setup_quality": "STRONG|MODERATE|WEAK|NO_TRADE",
+  "key_levels": {"support": 0.0, "resistance": 0.0},
+  "conflicts": "main contradictory evidence, or empty string",
+  "reasoning": "max 3 sentences with exact indicator/positioning/news evidence"
+}"""
 
     def __init__(self):
         super().__init__("deepseek-decision", "single-pass-futures-decision")
@@ -202,8 +230,23 @@ GPT web-search market context (SECONDARY — technicals lead):
         lows_s    = _ri(lows[-24:])
         volumes_s = _rv(volumes[-24:])
 
-        prompt = f"""Make one final trading decision for {symbol} perpetual futures.
+        # P1.3: orden de MÁS ESTABLE → MÁS VOLÁTIL para maximizar el prefix-cache de DeepSeek.
+        # Lecciones/vetos/memoria cambian solo al cerrar trades; mercado/derivados cambian cada ciclo.
+        prompt = f"""Trading decision for {symbol} perpetual futures. Context below is ordered most-stable → most-volatile; apply the decision rules and JSON schema from the system instructions.
 
+Lessons learned from past trades (real post-mortems of YOUR OWN closed trades — weigh them when a similar setup appears):
+{context.get('lessons') or '  (none yet)'}
+
+Recent vetoes (signals you proposed that an independent risk check BLOCKED before execution — do NOT re-propose the same flawed setup; either adjust the thesis or HOLD until conditions change):
+{context.get('audit_vetoes') or '  (none)'}
+
+Trade memory:
+- Recent decisions: {context.get('recent_decisions', 'none')}
+- Closed trade history: {context.get('trade_history', 'none')}
+- Trade stats: {context.get('trade_stats', 'none')}
+- Prior analysis history: {context.get('phase1_history', 'none')}
+- System events: {context.get('system_events', 'none')}
+{news_block}
 Current market:
 - Price: {price}
 - Trend: {trend}
@@ -226,58 +269,13 @@ Derivatives positioning:
 - Leverage: {market_data.get('leverage', 3)}x
 - Risk template: SL=1.5%, TP=2.5%
 
-{news_block}
-Portfolio and memory:
+Account state:
 - Balance: {context.get('portfolio_balance', 'unknown')} USDT
 - Open positions: {context.get('open_positions', 0)}
 - Daily P&L: {context.get('daily_pnl', '+0.00')} USDT
-- Recent decisions: {context.get('recent_decisions', 'none')}
-- Closed trade history: {context.get('trade_history', 'none')}
-- Trade stats: {context.get('trade_stats', 'none')}
-- Prior analysis history: {context.get('phase1_history', 'none')}
-- System events: {context.get('system_events', 'none')}
 {fmt_active_position(context)}
 
-Lessons learned from past trades (real post-mortems of YOUR OWN closed trades — weigh them when a similar setup appears):
-{context.get('lessons') or '  (none yet)'}
-
-Recent auditor vetoes (signals you proposed that the independent risk auditor BLOCKED before execution — do NOT re-propose the same flawed setup; either adjust the thesis or HOLD until conditions change):
-{context.get('audit_vetoes') or '  (none)'}
-
-Decision rules:
-- BUY when the long setup has a reasonable directional lean (confluence among trend/EMA alignment,
-  MACD, RSI) and room to TP before major resistance. You do NOT need a textbook-perfect edge —
-  a clear lean with favorable reward:risk is enough.
-- SELL when the short setup has a reasonable directional lean and room to TP before major support.
-- HOLD only when signals genuinely conflict (e.g. trend up but momentum down at resistance) or there
-  is no room to the target. Do not HOLD just because the move is not "obvious".
-- Do NOT open SHORT when the move is already exhausted to the downside — i.e. RSI below ~35 (oversold)
-  OR price sitting at/just above the lower Bollinger band — unless there is clear room to the TP before
-  support. Symmetrically, do NOT open LONG when RSI is above ~65 OR price is at/just below the upper band
-  without clear room to resistance. Chasing an exhausted move leaves no room for the 2.5% TP and invites a
-  mean-reversion squeeze (especially with crowded funding). Prefer HOLD or wait for a pullback.
-- Conviction below 0.58 should be HOLD.
-- "confidence" is your REAL probability that the trade reaches TP before SL (for BUY/SELL),
-  or how strongly you would avoid trading (for HOLD). Use the full 0.0-1.0 range and report
-  your genuine conviction — do NOT default to 0.0. A reasoned HOLD still has a confidence value.
-- Base the decision PRIMARILY on technicals and derivatives positioning (price action, trend,
-  EMA/MACD/RSI, support/resistance room, funding, OI, long/short ratio). News is SECONDARY context.
-- Do NOT HOLD merely because the news "Impact" label is HIGH or sentiment is neutral. A HIGH impact
-  label WITHOUT a verified catalyst is background noise and is NOT a reason to skip a valid technical setup.
-- Let news override the technical read ONLY when avoid_trading is true, or when there is a verified
-  catalyst (catalyst_veracity high) that directly CONTRADICTS the trade direction. A verified catalyst
-  that supports the direction may raise conviction.
-
-Respond only with JSON:
-{{
-  "vote": "BUY|SELL|HOLD",
-  "confidence": <number 0.0-1.0, your genuine conviction — never default to 0.0>,
-  "dominant_dimension": "technical|positioning|news|risk|mixed",
-  "setup_quality": "STRONG|MODERATE|WEAK|NO_TRADE",
-  "key_levels": {{"support": 0.0, "resistance": 0.0}},
-  "conflicts": "main contradictory evidence, or empty string",
-  "reasoning": "max 3 sentences with exact indicator/positioning/news evidence"
-}}"""
+Respond ONLY with the JSON object defined in the system instructions."""
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -292,6 +290,12 @@ Respond only with JSON:
 
         message = response.choices[0].message
         finish_reason = response.choices[0].finish_reason
+        # P1.3: confirmar que el prefix-cache de DeepSeek está pegando (hit alto vs miss).
+        usage = getattr(response, "usage", None)
+        hit = getattr(usage, "prompt_cache_hit_tokens", None)
+        if hit is not None:
+            miss = getattr(usage, "prompt_cache_miss_tokens", None)
+            self.log(f"[cache] prompt hit={hit} miss={miss} tokens", "INFO")
         raw_text = (message.content or "").strip()
         text = raw_text
         if not text:

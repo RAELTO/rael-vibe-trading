@@ -101,6 +101,8 @@ El prefix cache de DeepSeek es automático pero solo cubre el prefijo **estátic
 2. Reordenar el user prompt: primero lo semi-estable (lessons, vetoes, historial), al final lo que cambia cada ciclo (mercado, derivados, posición).
 3. Verificar en la respuesta de la API los campos de cache (`prompt_cache_hit_tokens`) y loggearlos en `_log_decision_debug` para confirmar el hit.
 
+**✅ HECHO:** reglas + esquema JSON movidos al `SYSTEM_PROMPT` (estático); user prompt reordenado más-estable→más-volátil (lecciones → vetos → memoria → noticias → mercado → derivados → account state); log `[cache] prompt hit=X miss=Y` tras cada llamada. **Probado en vivo:** 2ª llamada consecutiva `hit=1664 miss=119` (~93% del prompt cacheado) con JSON válido. Cambio solo backend (deploy = git pull + restart).
+
 ## P1.4 — DeepSeek: multi-timeframe + dieta de tokens
 
 Decide cada 15 min con SL de 1.5% pero solo ve **50 velas de 1h** (`execution/binance_futures.py:72`) — le falta la estructura intradía.
@@ -231,7 +233,7 @@ Mecánico, sin cambios de comportamiento; hacerlo en un PR aparte de cualquier c
 | 0 | ✅ **P0.3** (truncamiento DeepSeek) | Hecho — desbloqueaba decisiones limpias |
 | 1 | ✅ **P0.1** (bug TP/SL) + ✅ **P0.2** (shadow harness) + ✅ **P1.8** (veredicto en dashboard) | **FASE 1 COMPLETA.** Sin datos limpios y sin medición, el resto es fe |
 | 2 | ✅ **P1.5** (cooldown) + **P1.6** (gate shorts, espera shadow data) | Riesgo: tapan el hueco que el daily review ya señaló |
-| 3 | **P1.3** (cache) + **P1.4** (multi-timeframe; el "token diet" se puede adelantar a la fase 1) | Mejor input para el decisor, costo menor por ciclo |
+| 3 | ✅ **P1.3** (cache) + **P1.4** (✅ token-diet; multi-timeframe pendiente) | Mejor input para el decisor, costo menor por ciclo |
 | 4 | **P1.1** (razonamiento) y/o **P1.2** (self-consistency) | El salto de calidad del decisor — validar con el harness de la fase 1 |
 | 5 | **P2.1–P2.3** (MiMo review + crosscheck + observabilidad) | Expansión barata una vez el núcleo está medido |
 | 6 | **P3.1** (limpieza) → **P3.2** (reorganización) | En cualquier momento; ideal antes de la fase 5 para no refactorizar sobre código muerto |
