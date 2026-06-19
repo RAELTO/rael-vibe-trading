@@ -660,9 +660,15 @@ class StateStore:
         return [dict(r) for r in rows]
 
     def get_trade_stats(self) -> dict:
+        # OFFLINE_CLOSE son cierres breakeven por caída de infraestructura
+        # (entry==exit, PnL 0.00), no resultados de trading: se excluyen del
+        # win rate / avg loss para que las estadísticas reflejen sólo decisiones reales.
         with _conn() as con:
             rows = con.execute(
-                "SELECT pnl FROM trades WHERE status='CLOSED' ORDER BY id DESC LIMIT 20"
+                "SELECT pnl FROM trades "
+                "WHERE status='CLOSED' "
+                "AND (exit_reason IS NULL OR exit_reason != 'OFFLINE_CLOSE') "
+                "ORDER BY id DESC LIMIT 20"
             ).fetchall()
         if not rows:
             return {"total": 0, "win_rate": 0.0, "avg_profit": 0.0, "avg_loss": 0.0, "streak": 0}
